@@ -1,0 +1,51 @@
+# Ambientes Virtuais
+.venv/
+venv/
+env/
+bin/
+obj/
+
+# Configurações e Chaves (CRÍTICO)
+.env
+.env.local
+*.pem
+.streamlit/secrets.toml
+
+# Python - Cache e Compilação
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.Python
+
+# IDEs (VS Code, PyCharm)
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Bancos de Dados e Persistência (Rotina Viva)
+*.db
+*.duckdb
+*.wal
+chroma_db/
+data/chroma/
+storage/
+
+# Dados e PDFs (Opcional: ignore se não quiser subir os arquivos de exemplo)
+data/*.pdf
+data/*.csv
+
+# Docker
+docker-data/
+.cache/
+
+# Sistema Operacional
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

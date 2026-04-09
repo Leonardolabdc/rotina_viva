@@ -1,0 +1,11 @@
+.venv
+venv
+env
+__pycache__
+.git
+.gitignore
+*.md
+data/chroma
+.DS_Store
+.idea
+.vscode
