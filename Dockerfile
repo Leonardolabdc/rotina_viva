@@ -5,8 +5,7 @@ FROM python:3.12-bookworm
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     ROTINA_DATA_DIR=/data \
-    CHROMA_PERSIST_DIR=/data/chroma \
-    OLLAMA_HOST=http://ollama:11434
+    CHROMA_PERSIST_DIR=/data/chroma
 
 WORKDIR /app
 

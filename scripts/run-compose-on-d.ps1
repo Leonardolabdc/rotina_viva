@@ -4,7 +4,6 @@
   Reduz uso do disco C: ao rodar o Rotina Viva com Docker Compose.
 
   - TEMP/TMP e cache de pip da sessão vão para D:\Dev\RotinaViva\.cache (no disco D:).
-  - Modelos Ollama ficam em .\docker-data\ollama (já configurado no docker-compose.yml).
 
   IMPORTANTE: imagens e camadas Docker ainda ficam onde o Docker Desktop estiver configurado.
   Se o C: estiver cheio, mova os dados do Docker para D: (passos abaixo).
@@ -19,9 +18,8 @@ if (-not (Test-Path (Join-Path $ProjectRoot "docker-compose.yml"))) {
 $CacheRoot = Join-Path $ProjectRoot ".cache"
 $TmpDir = Join-Path $CacheRoot "tmp"
 $PipCache = Join-Path $CacheRoot "pip"
-$OllamaHostDir = Join-Path $ProjectRoot "docker-data\ollama"
 
-foreach ($d in @($CacheRoot, $TmpDir, $PipCache, $OllamaHostDir)) {
+foreach ($d in @($CacheRoot, $TmpDir, $PipCache)) {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
 }
 
@@ -35,7 +33,6 @@ Write-Host ""
 Write-Host "=== Rotina Viva - pastas no disco do projeto (drive D) ===" -ForegroundColor Cyan
 Write-Host " TEMP/TMP:     $TmpDir"
 Write-Host " PIP_CACHE:   $PipCache"
-Write-Host " Ollama data: $OllamaHostDir"
 Write-Host ""
 
 Write-Host 'Se o build ainda lotar o disco do sistema, mova o Docker Desktop para o drive D.' -ForegroundColor Yellow

@@ -24,6 +24,7 @@ PACKAGES = [
     "txtai>=6.0,<10",
     "pypdf>=4.0,<6",
     "httpx>=0.27,<1",
+    "openai>=1.0,<2",
 ]
 
 

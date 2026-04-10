@@ -1,41 +1,8 @@
-# Rotina Viva: Streamlit + Ollama (LLM + embeddings) + volumes para /data e Chroma.
-# O serviço `ollama` inicia `ollama serve` e faz pull de llama3.2:3b e nomic-embed-text
-# na primeira subida (pode demorar). Modelos ficam em ./docker-data/ollama (disco D: se o projeto estiver em D:).
+# Rotina Viva: Streamlit + DuckDB + ChromaDB.
+# LLM e embeddings vêm de API (OpenRouter / OpenAI) — configure .env (ROTINA_CHAT_PROVIDER, ROTINA_EMBED_PROVIDER, chaves).
+# Para Ollama local, rode o daemon na máquina e use ROTINA_*_PROVIDER=ollama (fora deste compose).
 
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: rotina-ollama
-    ports:
-      - "11434:11434"
-    environment:
-      # Não use env_file aqui: o .env do app costuma ter OLLAMA_HOST=127.0.0.1 e quebraria o bind no container.
-      # Nomes dos modelos vêm do .env na pasta do projeto (Compose substitui ${...} ao ler o YAML).
-      # PC com pouca RAM: evita vários modelos em memória ao mesmo tempo
-      OLLAMA_MAX_LOADED_MODELS: "1"
-      OLLAMA_NUM_PARALLEL: "1"
-    volumes:
-      # Modelos Ollama no disco D: (pasta do projeto), não no volume padrão do Docker em C:
-      - ./docker-data/ollama:/root/.ollama
-    entrypoint: ["/bin/bash", "-lc"]
-    # Pull usa os mesmos nomes do .env (substituição feita pelo Compose na máquina host).
-    command:
-      [
-        "ollama serve & for i in $(seq 1 180); do ollama list >/dev/null 2>&1 && break; sleep 1; done; ollama pull ${OLLAMA_CHAT_MODEL:-llama3.2:3b}; ollama pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text}; wait",
-      ]
-    # Só “healthy” quando os modelos já aparecem em `ollama list` (evita 404 no /api/chat).
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "ollama list 2>/dev/null | grep -Fq '${OLLAMA_CHAT_MODEL:-llama3.2:3b}' && ollama list 2>/dev/null | grep -Fq '${OLLAMA_EMBED_MODEL:-nomic-embed-text}' || exit 1",
-        ]
-      interval: 15s
-      timeout: 15s
-      retries: 40
-      start_period: 600s
-    restart: unless-stopped
-
   rotina-viva:
     build: .
     container_name: rotina-viva
@@ -46,10 +13,6 @@ services:
     environment:
       ROTINA_DATA_DIR: /data
       CHROMA_PERSIST_DIR: /data/chroma
-      OLLAMA_HOST: http://ollama:11434
     volumes:
       - ./data:/data
-    depends_on:
-      ollama:
-        condition: service_healthy
     restart: unless-stopped
