@@ -1,0 +1,139 @@
+﻿id_registro,id_aluno,data,cafe_manha,almoco,lanche_tarde,jantar_extra,trocas_banheiro,evacuacao,medicamentos,hora_sono_inicio,hora_sono_fim,qualidade_sono,atividade_dia,interacao_social,recado_professora
+1,13,2026-04-08,Comeu bem,Comeu bem,Comeu bem,Recusou,3,Pastoso,Nenhum,14:00,15:00,Sono leve,Coordenação motora,Preferiu brincar sozinho,Muito ativo durante o dia.
+2,32,2026-04-06,Comeu pouco,Recusou,Recusou,Recusou,4,Normal,Nenhum,13:00,13:00,Dormiu tranquilo,Coordenação motora,Preferiu brincar sozinho,Participou bem das atividades.
+3,38,2026-04-04,Comeu bem,Comeu pouco,Recusou,Recusou,3,Pastoso,Vitamina 10ml 09:00,12:00,14:00,Acordou agitado,Pintura,Brincou com os colegas,Muito ativo durante o dia.
+4,29,2026-04-07,Comeu pouco,Comeu bem,Comeu bem,Comeu pouco,4,Normal,Nenhum,12:00,13:00,Sono leve,Contação de histórias,Preferiu brincar sozinho,Apresentou leve sonolência.
+5,19,2026-04-17,Comeu pouco,Comeu bem,Comeu bem,Recusou,4,Diarreia,Vitamina 10ml 09:00,12:00,13:00,Dormiu tranquilo,Coordenação motora,Brincou com os colegas,Interagiu bem com colegas.
+6,28,2026-04-18,Comeu pouco,Comeu pouco,Comeu bem,Recusou,4,Diarreia,Paracetamol 5ml 12:00,14:00,16:00,Acordou agitado,Pintura,Preferiu brincar sozinho,Apresentou leve sonolência.
+7,36,2026-04-15,Recusou,Comeu bem,Comeu bem,Comeu pouco,4,Normal,Vitamina 10ml 09:00,12:00,12:00,Dormiu pouco,Contação de histórias,Brincou com os colegas,Participou bem das atividades.
+8,46,2026-04-02,Comeu pouco,Comeu pouco,Comeu bem,Comeu pouco,3,Diarreia,Paracetamol 5ml 12:00,13:00,14:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Mostrou-se mais quieto que o normal.
+9,32,2026-04-14,Comeu pouco,Recusou,Comeu bem,Comeu bem,1,Pastoso,Vitamina 10ml 09:00,12:00,13:00,Acordou agitado,Contação de histórias,Brincou com os colegas,Participou bem das atividades.
+10,11,2026-04-08,Comeu pouco,Recusou,Comeu bem,Comeu bem,2,Pastoso,Nenhum,12:00,13:00,Sono leve,Contação de histórias,Brincou com os colegas,Muito ativo durante o dia.
+11,28,2026-04-20,Comeu pouco,Comeu pouco,Recusou,Recusou,2,Diarreia,Nenhum,12:00,12:00,Dormiu tranquilo,Pintura,Brincou com os colegas,Participou bem das atividades.
+12,9,2026-04-10,Recusou,Comeu bem,Recusou,Recusou,3,Pastoso,Vitamina 10ml 09:00,13:00,14:00,Dormiu pouco,Contação de histórias,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+13,11,2026-04-06,Comeu pouco,Comeu bem,Comeu bem,Recusou,1,Normal,Paracetamol 5ml 12:00,12:00,13:00,Dormiu tranquilo,Brincadeiras livres,Preferiu brincar sozinho,Apresentou leve sonolência.
+14,30,2026-04-11,Comeu bem,Comeu bem,Comeu bem,Comeu pouco,1,Normal,Paracetamol 5ml 12:00,12:00,13:00,Dormiu pouco,Pintura,Brincou com os colegas,Participou bem das atividades.
+15,13,2026-04-13,Comeu bem,Recusou,Comeu bem,Recusou,2,Pastoso,Paracetamol 5ml 12:00,12:00,13:00,Sono leve,Pintura,Preferiu brincar sozinho,Interagiu bem com colegas.
+16,25,2026-04-03,Comeu bem,Recusou,Comeu bem,Comeu pouco,1,Diarreia,Nenhum,12:00,13:00,Dormiu tranquilo,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+17,16,2026-04-12,Comeu bem,Comeu pouco,Recusou,Comeu pouco,4,Pastoso,Paracetamol 5ml 12:00,14:00,14:00,Dormiu pouco,Brincadeiras livres,Brincou com os colegas,Apresentou leve sonolência.
+18,22,2026-04-14,Comeu bem,Recusou,Comeu bem,Recusou,2,Diarreia,Nenhum,14:00,14:00,Dormiu tranquilo,Pintura,Brincou com os colegas,Apresentou leve sonolência.
+19,43,2026-04-01,Recusou,Comeu pouco,Recusou,Recusou,4,Normal,Paracetamol 5ml 12:00,14:00,14:00,Acordou agitado,Coordenação motora,Brincou com os colegas,Muito ativo durante o dia.
+20,21,2026-04-17,Recusou,Comeu bem,Comeu pouco,Recusou,4,Pastoso,Paracetamol 5ml 12:00,13:00,14:00,Dormiu pouco,Brincadeiras livres,Preferiu brincar sozinho,Participou bem das atividades.
+21,42,2026-04-11,Recusou,Comeu pouco,Comeu bem,Comeu bem,2,Normal,Paracetamol 5ml 12:00,13:00,13:00,Dormiu pouco,Pintura,Preferiu brincar sozinho,Muito ativo durante o dia.
+22,41,2026-04-15,Comeu bem,Recusou,Comeu bem,Comeu bem,1,Normal,Vitamina 10ml 09:00,13:00,14:00,Acordou agitado,Coordenação motora,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+23,33,2026-04-15,Comeu bem,Comeu pouco,Recusou,Comeu pouco,3,Pastoso,Paracetamol 5ml 12:00,12:00,13:00,Sono leve,Brincadeiras livres,Preferiu brincar sozinho,Interagiu bem com colegas.
+24,50,2026-04-19,Comeu bem,Comeu bem,Recusou,Recusou,2,Diarreia,Nenhum,14:00,14:00,Sono leve,Contação de histórias,Brincou com os colegas,Apresentou leve sonolência.
+25,26,2026-04-04,Comeu bem,Comeu bem,Comeu bem,Comeu pouco,1,Normal,Paracetamol 5ml 12:00,14:00,14:00,Dormiu tranquilo,Pintura,Brincou com os colegas,Interagiu bem com colegas.
+26,45,2026-04-13,Recusou,Comeu pouco,Recusou,Comeu bem,3,Normal,Paracetamol 5ml 12:00,12:00,12:00,Acordou agitado,Brincadeiras livres,Brincou com os colegas,Apresentou leve sonolência.
+27,5,2026-04-11,Comeu pouco,Comeu pouco,Comeu pouco,Comeu bem,2,Diarreia,Paracetamol 5ml 12:00,12:00,12:00,Dormiu pouco,Coordenação motora,Preferiu brincar sozinho,Interagiu bem com colegas.
+28,48,2026-04-01,Comeu bem,Comeu pouco,Comeu bem,Recusou,1,Pastoso,Paracetamol 5ml 12:00,14:00,14:00,Acordou agitado,Pintura,Brincou com os colegas,Interagiu bem com colegas.
+29,36,2026-04-05,Comeu bem,Comeu pouco,Comeu bem,Comeu pouco,2,Normal,Paracetamol 5ml 12:00,12:00,12:00,Dormiu pouco,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+30,19,2026-04-16,Recusou,Comeu pouco,Recusou,Recusou,2,Normal,Paracetamol 5ml 12:00,12:00,13:00,Dormiu tranquilo,Coordenação motora,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+31,20,2026-04-08,Comeu bem,Recusou,Recusou,Comeu pouco,3,Normal,Paracetamol 5ml 12:00,14:00,15:00,Dormiu pouco,Contação de histórias,Brincou com os colegas,Interagiu bem com colegas.
+32,36,2026-04-19,Recusou,Comeu bem,Recusou,Comeu pouco,3,Pastoso,Vitamina 10ml 09:00,13:00,14:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Mostrou-se mais quieto que o normal.
+33,33,2026-04-04,Recusou,Comeu bem,Comeu bem,Comeu pouco,2,Pastoso,Paracetamol 5ml 12:00,13:00,14:00,Dormiu pouco,Musicalização,Preferiu brincar sozinho,Muito ativo durante o dia.
+34,28,2026-04-12,Comeu bem,Recusou,Comeu pouco,Recusou,1,Pastoso,Vitamina 10ml 09:00,14:00,16:00,Sono leve,Pintura,Brincou com os colegas,Participou bem das atividades.
+35,1,2026-04-03,Comeu pouco,Comeu pouco,Comeu bem,Comeu bem,2,Diarreia,Nenhum,12:00,13:00,Dormiu tranquilo,Brincadeiras livres,Preferiu brincar sozinho,Muito ativo durante o dia.
+36,39,2026-04-08,Recusou,Comeu bem,Comeu bem,Recusou,3,Diarreia,Vitamina 10ml 09:00,12:00,13:00,Dormiu tranquilo,Pintura,Preferiu brincar sozinho,Muito ativo durante o dia.
+37,37,2026-04-05,Comeu pouco,Recusou,Recusou,Recusou,2,Normal,Nenhum,13:00,13:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Participou bem das atividades.
+38,18,2026-04-06,Recusou,Comeu pouco,Comeu pouco,Comeu bem,3,Pastoso,Nenhum,12:00,13:00,Acordou agitado,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+39,15,2026-04-07,Recusou,Comeu bem,Comeu bem,Comeu bem,3,Diarreia,Paracetamol 5ml 12:00,14:00,15:00,Dormiu tranquilo,Pintura,Brincou com os colegas,Apresentou leve sonolência.
+40,7,2026-04-05,Comeu pouco,Recusou,Recusou,Comeu bem,3,Normal,Paracetamol 5ml 12:00,14:00,14:00,Acordou agitado,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+41,47,2026-04-06,Comeu bem,Comeu bem,Comeu bem,Comeu bem,4,Normal,Vitamina 10ml 09:00,14:00,15:00,Acordou agitado,Contação de histórias,Preferiu brincar sozinho,Participou bem das atividades.
+42,49,2026-04-06,Comeu bem,Recusou,Comeu pouco,Comeu pouco,2,Pastoso,Nenhum,13:00,14:00,Dormiu tranquilo,Contação de histórias,Brincou com os colegas,Interagiu bem com colegas.
+43,26,2026-04-05,Comeu pouco,Comeu bem,Comeu pouco,Recusou,2,Pastoso,Nenhum,14:00,14:00,Dormiu pouco,Coordenação motora,Preferiu brincar sozinho,Muito ativo durante o dia.
+44,48,2026-04-02,Comeu bem,Recusou,Comeu pouco,Recusou,4,Pastoso,Vitamina 10ml 09:00,14:00,14:00,Acordou agitado,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+45,47,2026-04-03,Comeu bem,Recusou,Comeu bem,Comeu bem,4,Normal,Nenhum,13:00,14:00,Acordou agitado,Musicalização,Brincou com os colegas,Participou bem das atividades.
+46,24,2026-04-09,Comeu bem,Recusou,Comeu bem,Comeu bem,2,Pastoso,Vitamina 10ml 09:00,14:00,14:00,Sono leve,Coordenação motora,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+47,20,2026-04-14,Comeu pouco,Comeu bem,Comeu bem,Comeu bem,4,Normal,Vitamina 10ml 09:00,13:00,14:00,Sono leve,Pintura,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+48,32,2026-04-08,Recusou,Comeu pouco,Comeu bem,Recusou,4,Normal,Vitamina 10ml 09:00,12:00,12:00,Acordou agitado,Pintura,Brincou com os colegas,Apresentou leve sonolência.
+49,14,2026-04-12,Comeu bem,Comeu pouco,Recusou,Recusou,3,Diarreia,Vitamina 10ml 09:00,13:00,14:00,Dormiu pouco,Coordenação motora,Brincou com os colegas,Apresentou leve sonolência.
+50,50,2026-04-02,Comeu bem,Comeu bem,Recusou,Comeu pouco,1,Pastoso,Paracetamol 5ml 12:00,13:00,13:00,Dormiu tranquilo,Brincadeiras livres,Brincou com os colegas,Interagiu bem com colegas.
+51,23,2026-04-18,Comeu bem,Comeu bem,Recusou,Recusou,1,Diarreia,Nenhum,13:00,13:00,Dormiu pouco,Musicalização,Preferiu brincar sozinho,Participou bem das atividades.
+52,21,2026-04-15,Comeu bem,Comeu pouco,Comeu bem,Recusou,2,Pastoso,Nenhum,14:00,14:00,Acordou agitado,Pintura,Brincou com os colegas,Interagiu bem com colegas.
+53,36,2026-04-12,Comeu pouco,Comeu pouco,Comeu pouco,Comeu pouco,4,Diarreia,Nenhum,13:00,13:00,Dormiu tranquilo,Contação de histórias,Brincou com os colegas,Interagiu bem com colegas.
+54,41,2026-04-21,Comeu bem,Recusou,Recusou,Recusou,4,Diarreia,Nenhum,14:00,14:00,Sono leve,Musicalização,Preferiu brincar sozinho,Apresentou leve sonolência.
+55,29,2026-04-18,Comeu pouco,Comeu bem,Comeu bem,Comeu pouco,3,Normal,Nenhum,14:00,15:00,Sono leve,Musicalização,Brincou com os colegas,Participou bem das atividades.
+56,16,2026-04-06,Recusou,Comeu bem,Recusou,Comeu pouco,3,Pastoso,Vitamina 10ml 09:00,12:00,12:00,Acordou agitado,Coordenação motora,Brincou com os colegas,Muito ativo durante o dia.
+57,18,2026-04-19,Comeu bem,Comeu pouco,Comeu bem,Comeu pouco,4,Pastoso,Vitamina 10ml 09:00,12:00,12:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Muito ativo durante o dia.
+58,44,2026-04-12,Comeu pouco,Comeu pouco,Recusou,Comeu pouco,4,Diarreia,Nenhum,13:00,14:00,Acordou agitado,Coordenação motora,Brincou com os colegas,Apresentou leve sonolência.
+59,49,2026-04-13,Comeu bem,Comeu pouco,Comeu pouco,Recusou,3,Normal,Vitamina 10ml 09:00,12:00,13:00,Dormiu pouco,Coordenação motora,Brincou com os colegas,Apresentou leve sonolência.
+60,14,2026-04-06,Recusou,Comeu bem,Comeu bem,Recusou,3,Diarreia,Paracetamol 5ml 12:00,14:00,15:00,Dormiu tranquilo,Pintura,Brincou com os colegas,Participou bem das atividades.
+61,43,2026-04-09,Recusou,Comeu pouco,Comeu pouco,Comeu pouco,2,Pastoso,Nenhum,12:00,13:00,Acordou agitado,Pintura,Brincou com os colegas,Muito ativo durante o dia.
+62,32,2026-04-20,Comeu pouco,Comeu bem,Recusou,Comeu pouco,1,Normal,Paracetamol 5ml 12:00,12:00,13:00,Acordou agitado,Musicalização,Brincou com os colegas,Participou bem das atividades.
+63,21,2026-04-10,Comeu bem,Recusou,Comeu pouco,Recusou,4,Pastoso,Paracetamol 5ml 12:00,13:00,13:00,Sono leve,Brincadeiras livres,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+64,50,2026-04-06,Comeu pouco,Comeu pouco,Comeu pouco,Recusou,4,Normal,Vitamina 10ml 09:00,14:00,15:00,Sono leve,Musicalização,Brincou com os colegas,Interagiu bem com colegas.
+65,19,2026-04-12,Comeu bem,Comeu bem,Comeu bem,Comeu bem,4,Diarreia,Paracetamol 5ml 12:00,13:00,13:00,Dormiu pouco,Coordenação motora,Brincou com os colegas,Participou bem das atividades.
+66,50,2026-04-12,Comeu bem,Comeu bem,Recusou,Recusou,2,Diarreia,Nenhum,12:00,13:00,Dormiu tranquilo,Pintura,Preferiu brincar sozinho,Apresentou leve sonolência.
+67,18,2026-04-01,Comeu pouco,Comeu bem,Comeu bem,Comeu bem,4,Normal,Paracetamol 5ml 12:00,13:00,14:00,Acordou agitado,Pintura,Preferiu brincar sozinho,Muito ativo durante o dia.
+68,17,2026-04-08,Comeu bem,Recusou,Recusou,Comeu bem,2,Diarreia,Vitamina 10ml 09:00,12:00,13:00,Dormiu pouco,Brincadeiras livres,Preferiu brincar sozinho,Muito ativo durante o dia.
+69,9,2026-04-09,Comeu bem,Comeu bem,Comeu bem,Comeu pouco,1,Diarreia,Vitamina 10ml 09:00,14:00,14:00,Sono leve,Contação de histórias,Brincou com os colegas,Apresentou leve sonolência.
+70,32,2026-04-01,Comeu bem,Comeu pouco,Recusou,Comeu pouco,4,Normal,Paracetamol 5ml 12:00,14:00,15:00,Dormiu tranquilo,Brincadeiras livres,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+71,41,2026-04-19,Recusou,Comeu bem,Recusou,Recusou,3,Diarreia,Paracetamol 5ml 12:00,13:00,14:00,Sono leve,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+72,24,2026-04-07,Recusou,Recusou,Recusou,Comeu bem,2,Pastoso,Vitamina 10ml 09:00,14:00,15:00,Sono leve,Brincadeiras livres,Preferiu brincar sozinho,Interagiu bem com colegas.
+73,20,2026-04-01,Comeu pouco,Comeu bem,Comeu pouco,Comeu pouco,3,Diarreia,Vitamina 10ml 09:00,14:00,15:00,Sono leve,Brincadeiras livres,Brincou com os colegas,Participou bem das atividades.
+74,44,2026-04-09,Recusou,Recusou,Comeu bem,Comeu pouco,4,Pastoso,Nenhum,12:00,13:00,Dormiu pouco,Coordenação motora,Preferiu brincar sozinho,Participou bem das atividades.
+75,32,2026-04-17,Comeu pouco,Recusou,Recusou,Comeu pouco,3,Normal,Vitamina 10ml 09:00,12:00,13:00,Dormiu tranquilo,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+76,46,2026-04-09,Comeu pouco,Comeu bem,Comeu bem,Recusou,2,Normal,Vitamina 10ml 09:00,13:00,14:00,Dormiu tranquilo,Contação de histórias,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+77,13,2026-04-04,Comeu pouco,Comeu pouco,Comeu pouco,Recusou,4,Pastoso,Vitamina 10ml 09:00,12:00,13:00,Acordou agitado,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+78,27,2026-04-11,Recusou,Recusou,Comeu bem,Comeu pouco,1,Normal,Vitamina 10ml 09:00,12:00,12:00,Acordou agitado,Brincadeiras livres,Brincou com os colegas,Interagiu bem com colegas.
+79,3,2026-04-13,Comeu pouco,Comeu pouco,Comeu bem,Comeu pouco,3,Normal,Paracetamol 5ml 12:00,13:00,13:00,Acordou agitado,Contação de histórias,Preferiu brincar sozinho,Interagiu bem com colegas.
+80,12,2026-04-20,Comeu pouco,Recusou,Recusou,Comeu pouco,1,Diarreia,Nenhum,12:00,12:00,Acordou agitado,Coordenação motora,Preferiu brincar sozinho,Mostrou-se mais quieto que o normal.
+81,28,2026-04-13,Recusou,Comeu pouco,Comeu pouco,Recusou,1,Diarreia,Vitamina 10ml 09:00,13:00,14:00,Sono leve,Pintura,Preferiu brincar sozinho,Mostrou-se mais quieto que o normal.
+82,16,2026-04-18,Recusou,Comeu pouco,Recusou,Comeu pouco,4,Diarreia,Paracetamol 5ml 12:00,13:00,13:00,Sono leve,Contação de histórias,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+83,1,2026-04-15,Comeu pouco,Comeu pouco,Recusou,Comeu pouco,4,Diarreia,Nenhum,13:00,13:00,Dormiu pouco,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+84,3,2026-04-07,Recusou,Comeu pouco,Recusou,Comeu pouco,2,Pastoso,Paracetamol 5ml 12:00,13:00,14:00,Dormiu tranquilo,Contação de histórias,Brincou com os colegas,Muito ativo durante o dia.
+85,18,2026-04-21,Comeu bem,Comeu pouco,Comeu pouco,Recusou,4,Diarreia,Vitamina 10ml 09:00,13:00,14:00,Dormiu pouco,Coordenação motora,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+86,31,2026-04-18,Comeu bem,Comeu bem,Comeu pouco,Recusou,1,Pastoso,Nenhum,13:00,14:00,Dormiu pouco,Contação de histórias,Preferiu brincar sozinho,Interagiu bem com colegas.
+87,40,2026-04-14,Comeu pouco,Recusou,Comeu bem,Recusou,2,Normal,Nenhum,13:00,14:00,Dormiu tranquilo,Brincadeiras livres,Preferiu brincar sozinho,Interagiu bem com colegas.
+88,44,2026-04-13,Recusou,Recusou,Comeu bem,Recusou,1,Normal,Vitamina 10ml 09:00,13:00,13:00,Dormiu pouco,Coordenação motora,Brincou com os colegas,Interagiu bem com colegas.
+89,28,2026-04-11,Comeu pouco,Recusou,Comeu bem,Comeu pouco,3,Diarreia,Vitamina 10ml 09:00,13:00,14:00,Sono leve,Contação de histórias,Preferiu brincar sozinho,Muito ativo durante o dia.
+90,20,2026-04-18,Recusou,Recusou,Recusou,Comeu bem,2,Normal,Vitamina 10ml 09:00,14:00,15:00,Sono leve,Coordenação motora,Brincou com os colegas,Interagiu bem com colegas.
+91,2,2026-04-11,Comeu bem,Comeu bem,Comeu pouco,Recusou,1,Pastoso,Paracetamol 5ml 12:00,14:00,15:00,Dormiu pouco,Brincadeiras livres,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+92,3,2026-04-14,Comeu bem,Comeu pouco,Comeu bem,Recusou,1,Pastoso,Nenhum,14:00,14:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Mostrou-se mais quieto que o normal.
+93,32,2026-04-05,Recusou,Recusou,Comeu bem,Recusou,2,Pastoso,Nenhum,14:00,15:00,Dormiu pouco,Brincadeiras livres,Preferiu brincar sozinho,Muito ativo durante o dia.
+94,28,2026-04-16,Comeu bem,Recusou,Comeu bem,Recusou,1,Diarreia,Paracetamol 5ml 12:00,14:00,15:00,Dormiu pouco,Brincadeiras livres,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+95,30,2026-04-16,Recusou,Comeu bem,Recusou,Comeu pouco,1,Diarreia,Vitamina 10ml 09:00,12:00,12:00,Acordou agitado,Coordenação motora,Preferiu brincar sozinho,Participou bem das atividades.
+96,48,2026-04-03,Comeu bem,Comeu pouco,Recusou,Comeu bem,2,Normal,Vitamina 10ml 09:00,13:00,14:00,Dormiu tranquilo,Coordenação motora,Preferiu brincar sozinho,Interagiu bem com colegas.
+97,7,2026-04-08,Recusou,Comeu bem,Comeu pouco,Comeu bem,2,Diarreia,Vitamina 10ml 09:00,13:00,14:00,Dormiu pouco,Coordenação motora,Preferiu brincar sozinho,Muito ativo durante o dia.
+98,35,2026-04-10,Recusou,Comeu bem,Recusou,Recusou,1,Normal,Nenhum,12:00,13:00,Acordou agitado,Musicalização,Brincou com os colegas,Participou bem das atividades.
+99,6,2026-04-10,Comeu pouco,Comeu pouco,Recusou,Comeu bem,4,Normal,Vitamina 10ml 09:00,14:00,15:00,Acordou agitado,Musicalização,Preferiu brincar sozinho,Muito ativo durante o dia.
+100,34,2026-04-20,Comeu pouco,Comeu pouco,Recusou,Comeu pouco,1,Diarreia,Vitamina 10ml 09:00,12:00,12:00,Sono leve,Pintura,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+101,47,2026-04-09,Recusou,Comeu pouco,Comeu pouco,Comeu pouco,1,Normal,Vitamina 10ml 09:00,14:00,15:00,Sono leve,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+102,17,2026-04-14,Recusou,Recusou,Recusou,Comeu bem,4,Diarreia,Paracetamol 5ml 12:00,14:00,15:00,Acordou agitado,Musicalização,Preferiu brincar sozinho,Interagiu bem com colegas.
+103,45,2026-04-03,Comeu pouco,Comeu bem,Recusou,Recusou,3,Normal,Vitamina 10ml 09:00,12:00,13:00,Sono leve,Musicalização,Preferiu brincar sozinho,Muito ativo durante o dia.
+104,20,2026-04-16,Recusou,Recusou,Comeu pouco,Comeu bem,2,Diarreia,Vitamina 10ml 09:00,14:00,14:00,Dormiu pouco,Pintura,Brincou com os colegas,Muito ativo durante o dia.
+105,32,2026-04-15,Comeu bem,Comeu bem,Comeu bem,Comeu pouco,1,Normal,Paracetamol 5ml 12:00,13:00,14:00,Acordou agitado,Musicalização,Preferiu brincar sozinho,Interagiu bem com colegas.
+106,17,2026-04-04,Comeu bem,Comeu pouco,Comeu pouco,Comeu bem,2,Normal,Paracetamol 5ml 12:00,12:00,13:00,Sono leve,Musicalização,Preferiu brincar sozinho,Interagiu bem com colegas.
+107,39,2026-04-02,Comeu bem,Comeu pouco,Comeu pouco,Comeu pouco,3,Normal,Paracetamol 5ml 12:00,14:00,15:00,Dormiu pouco,Coordenação motora,Brincou com os colegas,Apresentou leve sonolência.
+108,49,2026-04-04,Comeu pouco,Comeu pouco,Comeu bem,Comeu pouco,3,Diarreia,Paracetamol 5ml 12:00,14:00,15:00,Dormiu pouco,Musicalização,Brincou com os colegas,Participou bem das atividades.
+109,48,2026-04-16,Comeu bem,Recusou,Comeu bem,Comeu bem,1,Diarreia,Vitamina 10ml 09:00,13:00,14:00,Acordou agitado,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+110,7,2026-04-09,Recusou,Recusou,Comeu pouco,Comeu bem,2,Diarreia,Nenhum,12:00,13:00,Acordou agitado,Coordenação motora,Preferiu brincar sozinho,Apresentou leve sonolência.
+111,17,2026-04-19,Comeu bem,Comeu pouco,Comeu bem,Comeu bem,1,Normal,Vitamina 10ml 09:00,12:00,13:00,Acordou agitado,Musicalização,Brincou com os colegas,Participou bem das atividades.
+112,26,2026-04-21,Recusou,Comeu bem,Comeu pouco,Comeu pouco,2,Normal,Vitamina 10ml 09:00,12:00,12:00,Dormiu tranquilo,Musicalização,Brincou com os colegas,Mostrou-se mais quieto que o normal.
+113,15,2026-04-14,Comeu pouco,Comeu pouco,Comeu bem,Comeu bem,4,Normal,Vitamina 10ml 09:00,12:00,12:00,Acordou agitado,Musicalização,Brincou com os colegas,Interagiu bem com colegas.
+114,29,2026-04-11,Recusou,Comeu bem,Comeu pouco,Comeu bem,2,Pastoso,Nenhum,14:00,14:00,Acordou agitado,Contação de histórias,Brincou com os colegas,Interagiu bem com colegas.
+115,39,2026-04-06,Comeu bem,Comeu bem,Recusou,Comeu bem,3,Normal,Vitamina 10ml 09:00,12:00,12:00,Sono leve,Musicalização,Preferiu brincar sozinho,Mostrou-se mais quieto que o normal.
+116,12,2026-04-02,Comeu bem,Recusou,Recusou,Comeu bem,3,Pastoso,Vitamina 10ml 09:00,12:00,13:00,Acordou agitado,Pintura,Brincou com os colegas,Interagiu bem com colegas.
+117,50,2026-04-07,Recusou,Recusou,Recusou,Comeu bem,1,Pastoso,Nenhum,13:00,13:00,Acordou agitado,Contação de histórias,Preferiu brincar sozinho,Muito ativo durante o dia.
+118,43,2026-04-13,Comeu pouco,Comeu bem,Comeu pouco,Comeu pouco,4,Normal,Vitamina 10ml 09:00,12:00,13:00,Dormiu pouco,Pintura,Preferiu brincar sozinho,Apresentou leve sonolência.
+119,42,2026-04-14,Recusou,Recusou,Comeu pouco,Recusou,2,Normal,Vitamina 10ml 09:00,14:00,15:00,Dormiu pouco,Contação de histórias,Preferiu brincar sozinho,Apresentou leve sonolência.
+120,49,2026-04-20,Comeu pouco,Comeu bem,Comeu pouco,Comeu pouco,3,Normal,Nenhum,14:00,14:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Interagiu bem com colegas.
+121,16,2026-04-07,Recusou,Recusou,Comeu pouco,Recusou,3,Diarreia,Nenhum,13:00,13:00,Sono leve,Brincadeiras livres,Preferiu brincar sozinho,Participou bem das atividades.
+122,14,2026-04-21,Comeu pouco,Comeu bem,Comeu pouco,Comeu pouco,2,Diarreia,Vitamina 10ml 09:00,12:00,12:00,Dormiu tranquilo,Musicalização,Brincou com os colegas,Interagiu bem com colegas.
+123,42,2026-04-07,Comeu bem,Recusou,Comeu bem,Recusou,3,Diarreia,Nenhum,13:00,13:00,Dormiu tranquilo,Contação de histórias,Preferiu brincar sozinho,Muito ativo durante o dia.
+124,19,2026-04-09,Comeu bem,Comeu pouco,Comeu bem,Comeu pouco,2,Diarreia,Nenhum,13:00,13:00,Dormiu pouco,Contação de histórias,Brincou com os colegas,Muito ativo durante o dia.
+125,8,2026-04-18,Comeu pouco,Recusou,Comeu pouco,Recusou,2,Pastoso,Vitamina 10ml 09:00,13:00,13:00,Sono leve,Pintura,Preferiu brincar sozinho,Apresentou leve sonolência.
+126,23,2026-04-17,Recusou,Recusou,Comeu bem,Recusou,1,Diarreia,Vitamina 10ml 09:00,12:00,12:00,Dormiu pouco,Contação de histórias,Brincou com os colegas,Muito ativo durante o dia.
+127,43,2026-04-08,Recusou,Comeu pouco,Comeu pouco,Comeu pouco,3,Normal,Vitamina 10ml 09:00,13:00,14:00,Dormiu pouco,Musicalização,Brincou com os colegas,Interagiu bem com colegas.
+128,7,2026-04-14,Comeu bem,Comeu pouco,Comeu bem,Comeu pouco,1,Normal,Nenhum,13:00,14:00,Dormiu pouco,Pintura,Brincou com os colegas,Participou bem das atividades.
+129,24,2026-04-16,Recusou,Recusou,Recusou,Comeu bem,4,Normal,Vitamina 10ml 09:00,12:00,13:00,Acordou agitado,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+130,28,2026-04-08,Comeu pouco,Comeu bem,Comeu bem,Comeu bem,2,Diarreia,Nenhum,13:00,13:00,Dormiu pouco,Brincadeiras livres,Brincou com os colegas,Apresentou leve sonolência.
+131,22,2026-04-13,Comeu bem,Recusou,Comeu pouco,Comeu pouco,4,Diarreia,Nenhum,12:00,13:00,Dormiu tranquilo,Brincadeiras livres,Preferiu brincar sozinho,Participou bem das atividades.
+132,38,2026-04-09,Recusou,Comeu pouco,Comeu pouco,Recusou,1,Pastoso,Vitamina 10ml 09:00,13:00,14:00,Dormiu tranquilo,Musicalização,Preferiu brincar sozinho,Participou bem das atividades.
+133,23,2026-04-14,Comeu pouco,Recusou,Comeu pouco,Comeu bem,2,Pastoso,Paracetamol 5ml 12:00,14:00,15:00,Dormiu tranquilo,Contação de histórias,Brincou com os colegas,Muito ativo durante o dia.
+134,23,2026-04-16,Recusou,Comeu pouco,Comeu bem,Comeu pouco,2,Diarreia,Nenhum,12:00,12:00,Dormiu pouco,Pintura,Preferiu brincar sozinho,Participou bem das atividades.
+135,29,2026-04-13,Comeu pouco,Comeu bem,Comeu pouco,Comeu bem,4,Pastoso,Paracetamol 5ml 12:00,13:00,14:00,Sono leve,Brincadeiras livres,Brincou com os colegas,Apresentou leve sonolência.
+136,7,2026-04-07,Comeu bem,Comeu pouco,Comeu bem,Comeu bem,4,Normal,Vitamina 10ml 09:00,12:00,12:00,Sono leve,Coordenação motora,Brincou com os colegas,Participou bem das atividades.
+137,10,2026-04-10,Comeu pouco,Comeu bem,Comeu pouco,Comeu bem,4,Pastoso,Vitamina 10ml 09:00,12:00,13:00,Dormiu tranquilo,Musicalização,Brincou com os colegas,Apresentou leve sonolência.
+138,39,2026-04-05,Comeu pouco,Comeu pouco,Comeu pouco,Comeu pouco,2,Pastoso,Nenhum,14:00,15:00,Dormiu tranquilo,Contação de histórias,Preferiu brincar sozinho,Participou bem das atividades.

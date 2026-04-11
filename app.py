@@ -20,6 +20,7 @@ import httpx
 import streamlit as st
 from dotenv import load_dotenv
 from pypdf import PdfReader
+from txtai.pipeline import Segmentation
 
 load_dotenv()
 
@@ -117,14 +118,13 @@ def _use_openai_compatible_chat() -> bool:
     return ROTINA_CHAT_PROVIDER in ("openai", "openrouter") and bool(OPENAI_API_KEY)
 
 
-# Modo leve (padrão 1): poucos chunks, sem txtai na indexação — ideal para testar fluxo em PC fraco.
-LIGHT_MODE = _env_bool("ROTINA_LIGHT_MODE", "1")
-CHUNK_CHAR_SIZE = _env_int("ROTINA_CHUNK_CHARS", 2000 if LIGHT_MODE else 1000)
-CHUNK_CHAR_OVERLAP = _env_int("ROTINA_CHUNK_OVERLAP", 150 if LIGHT_MODE else 120)
-MAX_CHUNKS_PER_PDF = _env_int("ROTINA_MAX_CHUNKS_PER_PDF", 5 if LIGHT_MODE else 40)
-MAX_CHUNKS_TOTAL = _env_int("ROTINA_MAX_CHUNKS_TOTAL", 20 if LIGHT_MODE else 300)
-CHROMA_ADD_BATCH = _env_int("ROTINA_CHROMA_ADD_BATCH", 1 if LIGHT_MODE else 4)
-RAG_TOP_K = _env_int("ROTINA_RAG_TOP_K", 3 if LIGHT_MODE else 6)
+# Limites de chunking / RAG (ajustáveis por env; defaults para indexação “completa”).
+CHUNK_CHAR_SIZE = _env_int("ROTINA_CHUNK_CHARS", 1000)
+CHUNK_CHAR_OVERLAP = _env_int("ROTINA_CHUNK_OVERLAP", 120)
+MAX_CHUNKS_PER_PDF = _env_int("ROTINA_MAX_CHUNKS_PER_PDF", 40)
+MAX_CHUNKS_TOTAL = _env_int("ROTINA_MAX_CHUNKS_TOTAL", 300)
+CHROMA_ADD_BATCH = _env_int("ROTINA_CHROMA_ADD_BATCH", 4)
+RAG_TOP_K = _env_int("ROTINA_RAG_TOP_K", 6)
 # >0: corta trechos cuja distância ao embedding da pergunta excede (melhor_distância + gap).
 # Evita preencher K com PDFs pouco relacionados (ex.: cardápio em pergunta sobre nome da escola).
 ROTINA_RAG_DISTANCE_GAP = _env_float("ROTINA_RAG_DISTANCE_GAP", 0.28)
@@ -135,7 +135,6 @@ ROTINA_RAG_LEXICAL_WEIGHT = _env_float("ROTINA_RAG_LEXICAL_WEIGHT", 0.38)
 ROTINA_RAG_LEXICAL_FLOOR = _env_float("ROTINA_RAG_LEXICAL_FLOOR", 0.14)
 # Na indexação, prefixa trechos que parecem tabela para o embedding captar melhor “quadro/tabulação”.
 ROTINA_RAG_TABLE_EMBED_PREFIX = _env_bool("ROTINA_RAG_TABLE_EMBED_PREFIX", "1")
-USE_TXTAI_CHUNKING = _env_bool("ROTINA_USE_TXTAI", "0") and not LIGHT_MODE
 
 # Limites de taxa para API gratuita (OpenRouter / OpenAI): embeddings e HTTP.
 ROTINA_EMBED_API_BATCH_SIZE = _env_int("ROTINA_EMBED_API_BATCH_SIZE", 1)
@@ -175,12 +174,12 @@ _EMBED_INDEX_TOKEN = (
 
 # Muda o cache do Streamlit quando você alterar limites ou embeddings no .env
 INDEX_PROFILE = (
-    f"light={int(LIGHT_MODE)}|cs={CHUNK_CHAR_SIZE}|ov={CHUNK_CHAR_OVERLAP}|"
+    f"cs={CHUNK_CHAR_SIZE}|ov={CHUNK_CHAR_OVERLAP}|"
     f"pp={MAX_CHUNKS_PER_PDF}|tot={MAX_CHUNKS_TOTAL}|bat={CHROMA_ADD_BATCH}|"
     f"eab={effective_chroma_add_batch()}|emb_iv={ROTINA_API_EMBED_MIN_INTERVAL_SEC}|"
     f"pdfp={ROTINA_API_PAUSE_BETWEEN_PDF_SEC}|rdg={ROTINA_RAG_DISTANCE_GAP}|"
     f"rlw={ROTINA_RAG_LEXICAL_WEIGHT}|rlf={ROTINA_RAG_LEXICAL_FLOOR}|"
-    f"tpre={int(ROTINA_RAG_TABLE_EMBED_PREFIX)}|txtai={int(USE_TXTAI_CHUNKING)}|{_EMBED_INDEX_TOKEN}"
+    f"tpre={int(ROTINA_RAG_TABLE_EMBED_PREFIX)}|seg=txtai|{_EMBED_INDEX_TOKEN}"
 )
 
 
@@ -450,7 +449,7 @@ def flatten_segments(seg: Any) -> list[str]:
 
 
 def chunk_text_by_chars(text: str, size: int, overlap: int, max_chunks: int) -> list[str]:
-    """Chunking fixo por caracteres — leve na CPU; `max_chunks` evita indexação infinita."""
+    """Chunking fixo por caracteres — reserva se a segmentação txtai não produzir trechos."""
     text = text.strip()
     if not text or max_chunks <= 0:
         return []
@@ -471,17 +470,16 @@ def chunk_text_by_chars(text: str, size: int, overlap: int, max_chunks: int) -> 
 
 
 def chunk_pdf_for_index(text: str, per_pdf_cap: int) -> list[str]:
-    """Escolhe estratégia de chunking conforme modo leve / txtai."""
+    """Segmenta com txtai (parágrafos); só cai no chunking por caracteres se não houver trechos."""
     if not text.strip():
         return []
-    if LIGHT_MODE or not USE_TXTAI_CHUNKING:
-        return chunk_text_by_chars(text, CHUNK_CHAR_SIZE, CHUNK_CHAR_OVERLAP, per_pdf_cap)
-    from txtai.pipeline import Segmentation
-
     segment = Segmentation(paragraphs=True, minlength=200, cleantext=True)
     raw = segment(text)
     chunks = [c for c in flatten_segments(raw) if len(c) >= 60]
-    return chunks[:per_pdf_cap]
+    chunks = chunks[:per_pdf_cap]
+    if chunks:
+        return chunks
+    return chunk_text_by_chars(text, CHUNK_CHAR_SIZE, CHUNK_CHAR_OVERLAP, per_pdf_cap)
 
 
 _RAG_STOPWORDS = frozenset(
@@ -1023,7 +1021,38 @@ def normalize_plan(plan: dict[str, Any] | None, user_message: str) -> dict[str, 
     return p
 
 
-def _routing_planner_user_content(user_message: str, force: str | None = None) -> str:
+def _format_history_for_planner(
+    history: Iterable[dict[str, str]], max_messages: int = 8
+) -> str:
+    """Trechos recentes do chat para o planejador resolver 'ele/ela', 'meu filho', etc."""
+    rows = [
+        m
+        for m in history
+        if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
+    ]
+    if not rows:
+        return ""
+    tail = rows[-max_messages:]
+    lines: list[str] = []
+    for m in tail:
+        label = "usuário" if m["role"] == "user" else "assistente"
+        text = (m["content"] or "").strip()
+        if len(text) > 1200:
+            text = text[:1200] + "…"
+        lines.append(f"[{label}]: {text}")
+    return (
+        "Conversa recente (use para resolver pronomes e continuações — ex.: de quem é “ele/ela”, "
+        "qual nome citado antes):\n"
+        + "\n".join(lines)
+        + "\n\n"
+    )
+
+
+def _routing_planner_user_content(
+    user_message: str,
+    force: str | None = None,
+    history: Iterable[dict[str, str]] | None = None,
+) -> str:
     core = f"""Classifique a pergunta sobre uma escola infantil.
 
 {SCHEMA_FOR_LLM}
@@ -1031,6 +1060,7 @@ def _routing_planner_user_content(user_message: str, force: str | None = None) -
 Regras (siga com cuidado):
 - "rag": documentos oficiais — regimento, normas, PPP, proposta pedagógica, segurança/saúde **institucional** (protocolos gerais da escola), cardápio/nutrição em documento, horários gerais da escola, **nome da escola / identidade institucional / endereço / missão** quando estiver em texto oficial.
 - "sql": **cadastro ou diário** — turma de aluno, **alergias cadastradas por aluno** (`info_alunos.alergias`: não use só RAG por ser “saúde”), criança específica, refeições do dia no diário, sono, evacuação, medicamentos **anotados no diário**, recado da professora, listagens/contagens nas tabelas CSV.
+- **Continuação de conversa:** se a pergunta atual usar só pronomes (“ele”, “ela”, “meu filho”) ou não repetir o nome, use a **conversa recente** para saber **qual criança** e monte o SQL com `WHERE nome ILIKE '%...%'` em `info_alunos` (ou `id_aluno` se tiver sido citado). Não deixe de filtrar pelo aluno quando a pergunta for claramente sobre a mesma criança do turno anterior.
 - **Não** use "sql" para "qual é o nome da escola?" — isso é "rag" (documentos).
 - Use ambos ["rag","sql"] só se a pergunta claramente precisar de documento oficial **e** de linhas do diário/cadastro.
 - Tabelas e quadros em PDF costumam estar em "rag": peça termos que apareçam no documento (títulos de coluna, faixas etárias, nomes de refeição) — não use "sql" só porque a resposta parece uma tabela.
@@ -1055,11 +1085,16 @@ MODO **somente dados estruturados** (o usuário escolheu consultar só o DuckDB 
 MODO **somente documentos** (o usuário escolheu consultar só o ChromaDB / PDFs indexados):
 - Retorne sempre {"fontes": ["rag"], "sql": null}.
 """
-    return core + f"\nPergunta:\n{user_message}\n"
+    hist = _format_history_for_planner(history or [])
+    return core + "\n" + hist + f"Pergunta atual:\n{user_message}\n"
 
 
-def ollama_plan_sources(user_message: str, force: str | None = None) -> dict[str, Any]:
-    planner = _routing_planner_user_content(user_message, force=force)
+def ollama_plan_sources(
+    user_message: str,
+    force: str | None = None,
+    history: Iterable[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    planner = _routing_planner_user_content(user_message, force=force, history=history)
     payload = {
         "model": OLLAMA_CHAT_MODEL,
         "messages": [
@@ -1192,8 +1227,12 @@ def _openai_headers() -> dict[str, str]:
     return h
 
 
-def openai_plan_sources(user_message: str, force: str | None = None) -> dict[str, Any]:
-    planner = _routing_planner_user_content(user_message, force=force)
+def openai_plan_sources(
+    user_message: str,
+    force: str | None = None,
+    history: Iterable[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    planner = _routing_planner_user_content(user_message, force=force, history=history)
     messages = [
         {"role": "system", "content": "Responda apenas com JSON válido, sem markdown."},
         {"role": "user", "content": planner},
@@ -1353,10 +1392,14 @@ def openai_chat_stream(
         yield f"**Timeout na API:** `{e}`"
 
 
-def llm_plan_sources(user_message: str, force: str | None = None) -> dict[str, Any]:
+def llm_plan_sources(
+    user_message: str,
+    force: str | None = None,
+    history: Iterable[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     if _use_openai_compatible_chat():
-        return openai_plan_sources(user_message, force=force)
-    return ollama_plan_sources(user_message, force=force)
+        return openai_plan_sources(user_message, force=force, history=history)
+    return ollama_plan_sources(user_message, force=force, history=history)
 
 
 def apply_user_data_source_mode(plan: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -1500,7 +1543,10 @@ def main() -> None:
             plan_force = "sql_only"
         elif mode_ds == "documents":
             plan_force = "rag_only"
-        plan = normalize_plan(llm_plan_sources(user_text, force=plan_force), user_text)
+        plan = normalize_plan(
+            llm_plan_sources(user_text, force=plan_force, history=history_for_model),
+            user_text,
+        )
         plan = apply_user_data_source_mode(plan, mode_ds)
         fontes = plan.get("fontes") or ["rag"]
         if isinstance(fontes, str):

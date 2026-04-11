@@ -1,41 +1,68 @@
-# 🌿 Rotina Viva - Assistente Inteligente de Gestão Escolar
+# Rotina Viva 🌿
 
-O **Rotina Viva** é um sistema inteligente desenvolvido para transformar a comunicação entre escolas infantis e pais. O projeto automatiza o registro de rotinas diárias (alimentação, sono, higiene) e oferece um canal de consulta instantâneo baseado em documentos oficiais da instituição e dados históricos dos alunos.
+> **Status do Projeto:** 🛠️ Em desenvolvimento (Etapa 1 - CBL)
 
-Este projeto faz parte da disciplina **AI Factory: Building Intelligent Systems** da PUCPR.
-
----
-
-## 🚀 Diferenciais do Projeto
-- **Interface Natural:** Professores podem registrar eventos via chat de forma rápida.
-- **Memória Semântica (RAG):** Consulta automática ao Regimento Interno, Cardápio e Guias de Saúde.
-- **Análise de Dados Estruturados:** Monitoramento de padrões de saúde e comportamento via DuckDB.
-- **Alta Performance:** Implementado com arquitetura de API para garantir baixa latência mesmo em hardware limitado.
+O **Rotina Viva** é um assistente inteligente projetado para ser a ponte digital entre a escola e os pais. Ele utiliza Inteligência Artificial para transformar a montanha de dados burocráticos de uma escola infantil em informações úteis e acessíveis.
 
 ---
 
-## 🛠️ Stack Tecnológica
-- **Linguagem:** Python 3.10+
-- **Interface:** [Streamlit](https://streamlit.io/)
-- **Cérebro (LLM):** OpenAI API / Groq Cloud (Llama 3 / GPT-4o)
-- **Banco de Dados Estruturados:** [DuckDB](https://duckdb.org/)
-- **Banco Vetorial (RAG):** [ChromaDB](https://www.trychroma.com/)
-- **Infraestrutura:** [Docker](https://www.docker.com/) & [Docker Compose](https://docs.docker.com/compose/)
+## 💡 Metodologia CBL (Challenge-Based Learning)
+
+Este projeto foi estruturado seguindo os pilares do aprendizado baseado em desafios:
+
+### 🌟 Grande Ideia
+**Comunicação escolar e acompanhamento do desenvolvimento na educação infantil.** A base do projeto é fortalecer o vínculo entre a instituição de ensino e os responsáveis, garantindo que o desenvolvimento da criança seja acompanhado de perto e com clareza.
+
+### ❓ Pergunta Essencial
+> Como a IA pode otimizar o registro da rotina escolar e melhorar a transparência para os pais, garantindo que os educadores tenham mais tempo de qualidade para se dedicar ao desenvolvimento dos alunos?
+
+### 🎯 O Desafio
+**Desafio: Desenvolver o Rotina Viva**, um assistente inteligente robusto que automatiza o registro diário de alimentação, sono e higiene, além de atuar como consultor pedagógico instantâneo para sanar dúvidas sobre o regimento e diretrizes da escola. O sistema elimina gargalos de comunicação manual ao permitir que pais e educadores interajam de forma natural e acessível, garantindo agilidade no preenchimento de dados e humanizando o acompanhamento do desenvolvimento infantil.
 
 ---
 
-## 📁 Estrutura de Arquivos
-```text
-Rotina-Viva/
-├── data/                       # Documentos e CSVs base
-│   ├── diario_estruturado.csv
-│   ├── info_alunos.csv
-│   ├── guia_saude_seguranca.pdf
-│   ├── planejamento_nutricional_mensal.pdf
-│   └── regimento_interno_escola.pdf
-├── .env                        # Chaves de API (não versionado)
-├── .gitignore                  # Proteção de dados sensíveis
-├── app.py                      # Aplicação principal Streamlit
-├── Dockerfile                  # Receita da imagem Docker
-├── docker-compose.yml          # Orquestração do container
-└── requirements.txt            # Dependências do projeto
+## 📝 Justificativa Pessoal
+
+
+> A partir de conversas com minha esposa, observamos as limitações das agendas de papel tradicionais e a excessiva carga de trabalho manual imposta aos educadores. Acredito que uma agenda virtual, orientada por uma Inteligência Artificial bem estruturada e robusta, pode devolver o tempo para o que realmente importa: o cuidado e a educação das crianças, além de elevar significativamente a transparência das informações para os pais.
+
+---
+
+## 🛠️ Tecnologias Utilizadas
+
+* **Linguagem:** Python 3.12
+* **Interface:** Streamlit
+* **Orquestração de IA:** OpenRouter (Modelos meta-llama/llama-3.3-70b-instruct, openai/text-embedding-3-small)
+* **Banco de Dados Vetorial:** ChromaDB (para busca semântica e embeddings em PDFs)
+* **Banco de Dados Relacional:** DuckDB (para análise de dados de rotina)
+* **Infraestrutura:** Docker & Docker Compose
+* **Versionamento:** Git & GitHub
+
+---
+
+## 📦 Estrutura do Projeto
+
+* `data/`: Contém os arquivos de entrada (ex: `diario_estruturado.csv`).
+* `scripts/`: Scripts auxiliares de automação e limpeza de dados.
+* `Dockerfile` & `docker-compose.yml`: Configurações para ambiente isolado e replicável.
+* `app.py`: Script principal para processamento e análise.
+
+---
+
+## 🚀 Como Executar o Projeto
+
+### Pré-requisitos
+* [Docker](https://www.docker.com/) instalado.
+* [Git](https://git-scm.com/) instalado.
+
+### Passo a Passo
+1.  **Clone o repositório:**
+    ```bash
+    git clone [https://github.com/Leonardolabdc/Rotina-Viva.git](https://github.com/Leonardolabdc/Rotina-Viva.git)
+    cd Rotina-Viva
+    ```
+2.  **Suba o ambiente com Docker:**
+    ```bash
+    docker-compose up --build
+    ```
+
