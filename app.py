@@ -14,9 +14,11 @@ import time
 from pathlib import Path
 from typing import Any, Generator, Iterable
 
+import altair as alt
 import chromadb
 import duckdb
 import httpx
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -784,8 +786,21 @@ def add_with_retry(
 # ---------------------------------------------------------------------------
 
 
+def _duckdb_csv_reload_token(data_dir: Path) -> str:
+    """Muda quando os CSVs são alterados, para o cache do DuckDB recarregar."""
+    info_csv = _resolve_info_alunos_csv(data_dir)
+    diario_csv = data_dir / "diario_estruturado.csv"
+    parts: list[str] = []
+    for p in (info_csv, diario_csv):
+        try:
+            parts.append(str(p.stat().st_mtime_ns))
+        except OSError:
+            parts.append("0")
+    return "|".join(parts)
+
+
 @st.cache_resource
-def get_duckdb_connection(data_dir_str: str) -> duckdb.DuckDBPyConnection:
+def get_duckdb_connection(data_dir_str: str, _csv_token: str) -> duckdb.DuckDBPyConnection:
     data_dir = Path(data_dir_str)
     info_csv = _resolve_info_alunos_csv(data_dir)
     diario_csv = data_dir / "diario_estruturado.csv"
@@ -818,6 +833,543 @@ def run_safe_select(conn: duckdb.DuckDBPyConnection, sql: str) -> tuple[str, boo
         return format_sql_rows(rows, cols), True
     except Exception as e:
         return f"Erro ao executar SQL: {e}", False
+
+
+_MEAL_SCORE_MAP: dict[str, int] = {
+    "comeu bem": 2,
+    "comeu pouco": 1,
+    "recusou": 0,
+}
+
+
+def _meal_score_cell(val: Any) -> int:
+    k = str(val or "").strip().lower()
+    return _MEAL_SCORE_MAP.get(k, 1)
+
+
+def _parse_clock_to_minutes(s: Any) -> int | None:
+    raw = str(s or "").strip()
+    if not raw:
+        return None
+    raw = raw.replace(".", ":")
+    parts = raw.split(":")
+    if len(parts) < 2:
+        return None
+    try:
+        h = int(parts[0].strip())
+        m = int(parts[1].strip()[:2])
+        return max(0, min(23, h)) * 60 + max(0, min(59, m))
+    except ValueError:
+        return None
+
+
+def _sleep_minutes_between(start: Any, end: Any) -> int | None:
+    a = _parse_clock_to_minutes(start)
+    b = _parse_clock_to_minutes(end)
+    if a is None or b is None:
+        return None
+    d = b - a
+    if d < 0:
+        d += 24 * 60
+    if d <= 0:
+        return None
+    return d
+
+
+def build_sleep_meal_report_dataframe(
+    conn: duckdb.DuckDBPyConnection,
+    student_name: str,
+) -> tuple[
+    pd.DataFrame | None,
+    pd.DataFrame | None,
+    str | None,
+    str,
+    str | None,
+    tuple[str, str] | None,
+]:
+    """
+    Relatório só com CSV no DuckDB. Filtra pelo nome do aluno (ILIKE), depois:
+    - considera a **janela de 7 dias corridos** terminando na **data mais recente** do diário
+      desse(s) aluno(s); se nessa semana não houver **nenhum** sono válido, usa a semana que termina
+      na **última data com sono válido** (horários preenchidos e duração maior que zero);
+    - agrega por **dia** (média de ingestão e de minutos de sono se houver mais de uma linha no mesmo dia);
+    - preserva textos de **cafe_manha**, **almoco**, **lanche_tarde** por dia (moda) para gráfico de barras.
+
+    Retorno: (df resumo diário, df refeições textuais por dia, erro|None, rótulo alunos,
+              aviso_semana|None, (início_iso, fim_iso)|None).
+    """
+    name = (student_name or "").strip()
+    if not name:
+        return None, None, "Informe o nome do aluno.", "", None, None
+    try:
+        id_rows = conn.execute(
+            "SELECT id_aluno, nome FROM info_alunos WHERE nome ILIKE ? ORDER BY nome",
+            [f"%{name}%"],
+        ).fetchall()
+    except Exception as e:
+        return None, None, str(e), "", None, None
+    if not id_rows:
+        return (
+            None,
+            None,
+            f'Nenhum aluno encontrado com nome parecido com “{name}”.',
+            "",
+            None,
+            None,
+        )
+    ids = [int(r[0]) for r in id_rows]
+    resolved = ", ".join(sorted({str(r[1]) for r in id_rows}))
+    ph = ",".join(["?"] * len(ids))
+    try:
+        cur = conn.execute(
+            f"""
+            SELECT cafe_manha, almoco, lanche_tarde, jantar_extra,
+                   hora_sono_inicio, hora_sono_fim, qualidade_sono, data, id_aluno
+            FROM diario_estruturado
+            WHERE id_aluno IN ({ph})
+            """,
+            ids,
+        )
+        df = cur.fetchdf()
+    except Exception as e:
+        return None, None, str(e), resolved, None, None
+    if df is None or df.empty:
+        return (
+            None,
+            None,
+            f"Sem registros de diário para: {resolved}.",
+            resolved,
+            None,
+            None,
+        )
+
+    if "data" not in df.columns:
+        return None, None, "Coluna `data` ausente no diário.", resolved, None, None
+
+    meal_cols = ["cafe_manha", "almoco", "lanche_tarde", "jantar_extra"]
+    meal_txt_cols = ["cafe_manha", "almoco", "lanche_tarde"]
+    for c in meal_cols:
+        if c not in df.columns:
+            return None, None, f"Coluna ausente: {c}", resolved, None, None
+    for c in meal_txt_cols:
+        df[f"{c}_txt"] = df[c].fillna("—").astype(str).str.strip()
+    for c in meal_cols:
+        df[c] = df[c].map(_meal_score_cell)
+    df["ingestao"] = df[meal_cols].sum(axis=1).astype(int)
+
+    df["sono_min"] = df.apply(
+        lambda r: _sleep_minutes_between(
+            r.get("hora_sono_inicio"), r.get("hora_sono_fim")
+        ),
+        axis=1,
+    )
+    df["qualidade_sono"] = df["qualidade_sono"].fillna("—").astype(str).str.strip()
+
+    df["data_dt"] = pd.to_datetime(df["data"], errors="coerce")
+    df = df.dropna(subset=["data_dt"])
+    if df.empty:
+        return (
+            None,
+            None,
+            "Nenhuma data válida na coluna `data` do diário.",
+            resolved,
+            None,
+            None,
+        )
+
+    d_latest = df["data_dt"].dt.normalize().max()
+
+    def _slice_week(df_in: pd.DataFrame, end_day: pd.Timestamp) -> pd.DataFrame:
+        start_day = end_day - pd.Timedelta(days=6)
+        out = df_in[
+            (df_in["data_dt"].dt.normalize() >= start_day)
+            & (df_in["data_dt"].dt.normalize() <= end_day)
+        ].copy()
+        out = out.dropna(subset=["sono_min"])
+        return out[out["sono_min"] > 0]
+
+    d_max_day = d_latest
+    d_min_day = d_max_day - pd.Timedelta(days=6)
+    df_w = _slice_week(df, d_max_day)
+    aviso_janela: str | None = None
+    if df_w.empty:
+        ok = df.dropna(subset=["sono_min"])
+        ok = ok[ok["sono_min"] > 0]
+        if ok.empty:
+            return (
+                None,
+                None,
+                "Não há registros com **sono válido** (horários de início/fim preenchidos e duração "
+                f"maior que zero) para: {resolved}. Revise os horários de início e fim do descanso nos registros.",
+                resolved,
+                None,
+                (str(d_min_day.date()), str(d_max_day.date())),
+            )
+        d_anchor = ok["data_dt"].dt.normalize().max()
+        df_w = _slice_week(df, d_anchor)
+        d_max_day = d_anchor
+        d_min_day = d_max_day - pd.Timedelta(days=6)
+        if df_w.empty:
+            return (
+                None,
+                None,
+                "Não há registros com sono válido na **semana** usada para o relatório "
+                f"({d_min_day.date()} a {d_max_day.date()}).",
+                resolved,
+                None,
+                (str(d_min_day.date()), str(d_max_day.date())),
+            )
+        if d_anchor < d_latest:
+            aviso_janela = (
+                f"A data mais recente no diário (**{d_latest.date()}**) não tinha sono válido "
+                f"(horários vazios, ilegíveis ou com duração zero). O relatório usa a semana que termina em "
+                f"**{d_anchor.date()}**, última data com intervalo de sono válido."
+            )
+
+    df_w["dia"] = df_w["data_dt"].dt.normalize()
+
+    def _qual_pick(s: pd.Series) -> str:
+        m = s.mode()
+        return str(m.iloc[0]) if len(m) > 0 else str(s.iloc[0])
+
+    def _txt_pick(s: pd.Series) -> str:
+        m = s.mode()
+        return str(m.iloc[0]) if len(m) > 0 else str(s.iloc[0])
+
+    daily = df_w.groupby("dia", as_index=False).agg(
+        ingestao=("ingestao", "mean"),
+        sono_min=("sono_min", "mean"),
+        qualidade_sono=("qualidade_sono", _qual_pick),
+        cafe_manha=("cafe_manha_txt", _txt_pick),
+        almoco=("almoco_txt", _txt_pick),
+        lanche_tarde=("lanche_tarde_txt", _txt_pick),
+    )
+    daily["ingestao"] = daily["ingestao"].round(2)
+    daily["sono_min"] = daily["sono_min"].round(1)
+    daily_meals = daily[["dia", "cafe_manha", "almoco", "lanche_tarde"]].copy()
+    daily = daily.drop(columns=["cafe_manha", "almoco", "lanche_tarde"])
+
+    n_dias = len(daily)
+    periodo = (str(d_min_day.date()), str(d_max_day.date()))
+
+    if n_dias < 2:
+        err = (
+            "Para comparar **uma semana**, são necessários **pelo menos 2 dias distintos** "
+            f"com sono e refeições registrados entre **{d_min_day.date()}** e **{d_max_day.date()}**. "
+            f"No momento há apenas **1** dia com dado válido para: {resolved}. "
+            "Inclua registros em mais dias desse período nos dados de rotina."
+        )
+        if aviso_janela:
+            err = aviso_janela + "\n\n" + err
+        return (None, None, err, resolved, None, periodo)
+
+    aviso: str | None = None
+    if n_dias < 7:
+        aviso = (
+            f"Na janela de **7 dias** ({d_min_day.date()} a {d_max_day.date()}) há apenas **{n_dias}** "
+            "dia(s) com registro. Complete os dias faltantes nos dados de rotina "
+            "para uma análise semanal completa."
+        )
+    if aviso_janela:
+        aviso = aviso_janela + ("\n\n" + aviso if aviso else "")
+
+    return daily, daily_meals, None, resolved, aviso, periodo
+
+
+def _sleep_hours_line_chart_df(daily: pd.DataFrame) -> pd.DataFrame:
+    d = daily.sort_values("dia")
+    return pd.DataFrame(
+        {
+            "Data": d["dia"].dt.strftime("%Y-%m-%d"),
+            "Horas de sono": (d["sono_min"] / 60.0).round(2),
+        }
+    )
+
+
+def _norm_intake_status_for_chart(raw: str) -> str:
+    """Reduz textos livres a poucas categorias para cores consistentes na legenda."""
+    t = str(raw or "").strip().lower()
+    if "recusou" in t:
+        return "Recusou"
+    if "comeu bem" in t or "comeu tudo" in t:
+        return "Comeu bem"
+    if "comeu pouco" in t:
+        return "Comeu pouco"
+    if t in ("—", "-", "", "nan", "none"):
+        return "Sem registro"
+    return "Outro"
+
+
+def _meal_intake_stacked_bar_altair(
+    daily_meals: pd.DataFrame,
+) -> tuple[alt.Chart, pd.DataFrame]:
+    """
+    Barras empilhadas (café → almoço → lanche, de baixo para cima), cor = classificação da ingestão.
+    Retorna o gráfico Altair e uma tabela para referência completa abaixo do gráfico.
+    """
+    meal_pt = {
+        "cafe_manha": "Café da manhã",
+        "almoco": "Almoço",
+        "lanche_tarde": "Lanche",
+    }
+    meal_ord = {"cafe_manha": 0, "almoco": 1, "lanche_tarde": 2}
+    dm = daily_meals.sort_values("dia")
+    if dm.empty:
+        empty = pd.DataFrame()
+        return alt.Chart(empty).mark_bar(), empty
+
+    day_order = sorted(dm["dia"].unique(), key=lambda x: pd.Timestamp(x))
+    sort_labels = [pd.Timestamp(d).strftime("%d/%m") for d in day_order]
+
+    rows: list[dict[str, str | float | int]] = []
+    for _, r in dm.iterrows():
+        d_ts = pd.Timestamp(r["dia"])
+        d_show = d_ts.strftime("%d/%m")
+        for col, pt in meal_pt.items():
+            registro = str(r[col]).strip() or "—"
+            status = _norm_intake_status_for_chart(registro)
+            rows.append(
+                {
+                    "data_show": d_show,
+                    "fatia": 1.0,
+                    "ordem": meal_ord[col],
+                    "refeicao": pt,
+                    "status": status,
+                    "registro": registro,
+                }
+            )
+    bar_df = pd.DataFrame(rows)
+
+    domain_all = ["Comeu bem", "Comeu pouco", "Recusou", "Sem registro", "Outro"]
+    range_all = ["#1a9850", "#f4a020", "#c0392b", "#aeb6bf", "#5d6d7e"]
+    present = [s for s in domain_all if s in set(bar_df["status"])]
+    colors = [range_all[domain_all.index(s)] for s in present]
+
+    chart = (
+        alt.Chart(bar_df)
+        .mark_bar(cornerRadiusEnd=2, stroke="white", strokeWidth=1.5)
+        .encode(
+            x=alt.X(
+                "data_show:N",
+                title="Dia",
+                sort=sort_labels,
+                axis=alt.Axis(labelAngle=0, labelOverlap=False),
+            ),
+            y=alt.Y(
+                "fatia:Q",
+                stack="zero",
+                title=None,
+                axis=None,
+            ),
+            color=alt.Color(
+                "status:N",
+                title="Ingestão (legenda)",
+                scale=alt.Scale(domain=present, range=colors),
+                legend=alt.Legend(
+                    orient="bottom",
+                    direction="horizontal",
+                    columns=3,
+                    labelLimit=0,
+                    labelFontSize=12,
+                    titleFontSize=12,
+                    padding=12,
+                    symbolSize=80,
+                ),
+            ),
+            order=alt.Order("ordem:Q", sort="ascending"),
+            tooltip=[
+                alt.Tooltip("data_show", title="Dia"),
+                alt.Tooltip("refeicao", title="Refeição"),
+                alt.Tooltip("registro", title="Texto registrado"),
+                alt.Tooltip("status", title="Classificação"),
+            ],
+        )
+        .properties(height=260)
+    )
+
+    ref_tbl = bar_df.rename(
+        columns={
+            "data_show": "Dia",
+            "refeicao": "Refeição",
+            "registro": "Texto registrado",
+            "status": "Classificação",
+        }
+    )[["Dia", "Refeição", "Texto registrado", "Classificação"]]
+    return chart, ref_tbl
+
+
+def sleep_meal_report_summary_md(
+    df: pd.DataFrame,
+    alunos_label: str,
+    janela_ini: str | None,
+    janela_fim: str | None,
+) -> str:
+    """Texto curto com leitura dos números (minimalista)."""
+    n = len(df)
+    mi = float(df["ingestao"].mean())
+    ms = float(df["sono_min"].mean())
+    mx_ing = float(df["ingestao"].max()) if n else 0.0
+    mn_ing = float(df["ingestao"].min()) if n else 0.0
+
+    parts = [
+        "**Base de informação:** dados oficiais de cadastro e de rotina diária da instituição, "
+        "tratados de forma confidencial e protegidos pelas normas aplicáveis, inclusive quanto a "
+        "direitos autorais e privacidade.",
+        f"**Aluno(s) considerado(s):** {alunos_label}.",
+    ]
+    if janela_ini and janela_fim:
+        parts.append(
+            f"**Janela semanal:** 7 dias corridos de **{janela_ini}** a **{janela_fim}** "
+            f"(terminando na data mais recente do diário). **{n}** dia(s) com registro válido nesse intervalo."
+        )
+    else:
+        parts.append(f"**{n}** dia(s) com refeições e sono registrados.")
+    parts.append(
+        f"Ingestão combinada (quatro momentos, 0–8): média **{mi:.1f}** "
+        f"(mín. {mn_ing:.1f}, máx. {mx_ing:.1f}). "
+        f"Sono na rotina: média **{ms:.0f} min** entre início e fim.",
+    )
+    try:
+        by_q = df.groupby("qualidade_sono", dropna=False)["ingestao"].mean().sort_values(
+            ascending=False
+        )
+        if len(by_q) > 1:
+            top = by_q.index[0]
+            parts.append(
+                f"Entre os rótulos de **qualidade do sono**, a maior média de ingestão "
+                f"aparece em registros classificados como “{top}”. "
+                "Isso descreve o conjunto de dados, não causa médica ou pedagógica."
+            )
+        elif len(by_q) == 1:
+            parts.append(
+                "Todos os registros compartilham o mesmo rótulo de qualidade de sono; "
+                "compare períodos ou turmas no futuro para ver tendências."
+            )
+    except Exception:
+        pass
+    return "\n\n".join(parts)
+
+
+def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> None:
+    """
+    Conteúdo do relatório (chamado dentro do expander centralizado abaixo do título).
+    Fluxo: Gerar relatório → nome do aluno → gráfico e resumo (só CSV / DuckDB).
+    """
+    phase = st.session_state.get("sleep_rep_phase", "idle")
+
+    if phase == "idle":
+        if st.button(
+            "Gerar relatório",
+            type="secondary",
+            use_container_width=True,
+            key="sleep_rep_open_btn",
+            help="Tendência de sono e padrões de alimentação com base nos registros da escola.",
+        ):
+            st.session_state.sleep_rep_phase = "ask_name"
+            st.rerun()
+        return
+
+    if phase == "ask_name":
+        st.caption(
+            "Use o **nome completo** como consta no **cadastro da escola**. "
+            "O relatório considera os **últimos sete dias corridos** a partir da data mais recente "
+            "registrada na rotina da criança. **Sono:** horas por dia (média do intervalo início–fim). "
+            "**Alimentação:** café da manhã, almoço e lanche por dia."
+        )
+        with st.form("sleep_rep_form"):
+            nome_in = st.text_input(
+                "Nome do aluno",
+                placeholder="Ex.: Rafael Souza",
+                key="sleep_rep_nome_field",
+            )
+            g1, g2 = st.columns(2)
+            with g1:
+                sub = st.form_submit_button("Gerar gráfico")
+            with g2:
+                cancel = st.form_submit_button("Cancelar")
+
+        if cancel:
+            st.session_state.sleep_rep_phase = "idle"
+            st.rerun()
+
+        if sub:
+            nome_val = (st.session_state.get("sleep_rep_nome_field") or "").strip()
+            if conn is None:
+                st.warning("Não foi possível carregar os dados da rotina.")
+            elif not nome_val:
+                st.warning("Digite o nome do aluno.")
+            else:
+                q = nome_val
+                df, _meals, err, resolved, _aw, _per = build_sleep_meal_report_dataframe(
+                    conn, q
+                )
+                if err:
+                    st.warning(err)
+                else:
+                    st.session_state.sleep_rep_query_name = q
+                    st.session_state.sleep_rep_resolved_label = resolved
+                    st.session_state.sleep_rep_phase = "result"
+                    st.rerun()
+        return
+
+    # phase == "result"
+    st.markdown("##### Sono e alimentação")
+    st.caption(
+        "Gráficos e texto elaborados com base em **dados institucionais da escola**, "
+        "confidenciais e **protegidos por direitos autorais** e pela legislação de proteção de dados aplicável."
+    )
+    if conn is None:
+        st.info("Não foi possível carregar os dados da rotina. Tente novamente mais tarde.")
+        if st.button("Fechar", key="sleep_rep_close_na"):
+            st.session_state.sleep_rep_phase = "idle"
+            st.rerun()
+        return
+
+    qn = st.session_state.get("sleep_rep_query_name") or ""
+    resolved = st.session_state.get("sleep_rep_resolved_label") or ""
+    df, daily_meals, err, resolved2, aviso_sem, periodo = (
+        build_sleep_meal_report_dataframe(conn, qn)
+    )
+    label = resolved or resolved2
+    if err or df is None:
+        st.warning(err or "Sem dados.")
+        if st.button("Fechar", key="sleep_rep_close_err"):
+            st.session_state.sleep_rep_phase = "idle"
+            st.rerun()
+        return
+
+    if aviso_sem:
+        st.warning(aviso_sem)
+
+    j_ini, j_fim = (periodo or ("", ""))
+
+    st.markdown("**Sono** — tendência (horas por dia)")
+    st.caption(
+        "Horas calculadas pela diferença entre **`hora_sono_fim`** e **`hora_sono_inicio`** "
+        "(média do dia, se houver mais de um registro)."
+    )
+    line_df = _sleep_hours_line_chart_df(df)
+    st.line_chart(line_df, x="Data", y="Horas de sono")
+
+    st.markdown("**Alimentação** — café, almoço e lanche (distribuição na semana)")
+    st.caption(
+        "Cada coluna é um dia. **De baixo para cima:** café da manhã, almoço e lanche. "
+        "As **cores** seguem a classificação da ingestão (legenda abaixo do gráfico). "
+        "Passe o cursor sobre os segmentos para ver o texto completo registrado pela escola."
+    )
+    bar_chart, ref_tbl = _meal_intake_stacked_bar_altair(daily_meals)
+    st.altair_chart(bar_chart, use_container_width=True)
+    st.markdown("**Referências — texto registrado por dia e refeição**")
+    st.dataframe(
+        ref_tbl,
+        hide_index=True,
+        use_container_width=True,
+        height=min(320, 36 + len(ref_tbl) * 35),
+    )
+    st.markdown(sleep_meal_report_summary_md(df, label, j_ini or None, j_fim or None))
+    if st.button("Fechar", key="sleep_rep_close_ok"):
+        st.session_state.sleep_rep_phase = "idle"
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -872,10 +1424,19 @@ def get_chroma_collection(
     return collection
 
 
-def retrieve_rag_context(collection: chromadb.Collection, question: str, k: int | None = None) -> str:
+def retrieve_rag_context_and_chunks(
+    collection: chromadb.Collection, question: str, k: int | None = None
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    Retorna o bloco de texto para o LLM e a lista dos trechos (chunks) efetivamente
+    escolhidos após busca + reranking — mesma ordem do contexto enviado ao modelo.
+    """
     n = collection.count()
     if n == 0:
-        return "(Nenhum documento indexado. Coloque os PDFs em ROTINA_DATA_DIR e reinicie o app.)"
+        return (
+            "(Nenhum documento indexado. Coloque os PDFs em ROTINA_DATA_DIR e reinicie o app.)",
+            [],
+        )
     top = k if k is not None else RAG_TOP_K
     top = max(1, top)
     if ROTINA_RAG_DISTANCE_GAP > 0:
@@ -908,10 +1469,10 @@ def retrieve_rag_context(collection: chromadb.Collection, question: str, k: int 
     docs = (res.get("documents") or [[]])[0]
     metas = (res.get("metadatas") or [[]])[0]
     dists = (res.get("distances") or [[]])[0]
-    parts: list[str] = []
+    selected: list[tuple[str, str, float | None, dict[str, Any]]] = []
 
     if not docs:
-        return "(sem trechos relevantes)"
+        return "(sem trechos relevantes)", []
 
     w_lex = ROTINA_RAG_LEXICAL_WEIGHT
     if w_lex > 0 and len(docs) == len(dists) and dists:
@@ -923,7 +1484,7 @@ def retrieve_rag_context(collection: chromadb.Collection, question: str, k: int 
         order = sorted(range(len(docs)), key=lambda i: combined[i], reverse=True)
         picked: set[int] = set()
         for i in order:
-            if len(parts) >= top:
+            if len(selected) >= top:
                 break
             dist_f = float(dists[i])
             if ROTINA_RAG_DISTANCE_GAP > 0:
@@ -935,30 +1496,52 @@ def retrieve_rag_context(collection: chromadb.Collection, question: str, k: int 
             if ok:
                 picked.add(i)
                 src = (metas[i] or {}).get("source", "?")
-                parts.append(f"[Fonte: {src}]\n{docs[i]}")
-        if len(parts) < top:
+                selected.append((src, docs[i] or "", float(dists[i]), metas[i] or {}))
+        if len(selected) < top:
             for i in order:
-                if len(parts) >= top:
+                if len(selected) >= top:
                     break
                 if i in picked:
                     continue
                 picked.add(i)
                 src = (metas[i] or {}).get("source", "?")
-                parts.append(f"[Fonte: {src}]\n{docs[i]}")
+                selected.append((src, docs[i] or "", float(dists[i]), metas[i] or {}))
     elif ROTINA_RAG_DISTANCE_GAP > 0 and dists and len(dists) == len(docs):
         base = float(dists[0])
         for doc, dist, meta in zip(docs, dists, metas):
             if float(dist) - base > ROTINA_RAG_DISTANCE_GAP:
                 break
             src = (meta or {}).get("source", "?")
-            parts.append(f"[Fonte: {src}]\n{doc}")
-            if len(parts) >= top:
+            selected.append((src, doc or "", float(dist), meta or {}))
+            if len(selected) >= top:
                 break
     else:
-        for doc, meta in zip(docs[:top], metas[:top]):
+        for i, (doc, meta) in enumerate(zip(docs[:top], metas[:top])):
+            dist_v: float | None = float(dists[i]) if i < len(dists) else None
             src = (meta or {}).get("source", "?")
-            parts.append(f"[Fonte: {src}]\n{doc}")
-    return "\n\n---\n\n".join(parts) if parts else "(sem trechos relevantes)"
+            selected.append((src, doc or "", dist_v, meta or {}))
+
+    if not selected:
+        return "(sem trechos relevantes)", []
+
+    parts_fmt = [f"[Fonte: {s}]\n{t}" for s, t, _, __ in selected]
+    rag_block = "\n\n---\n\n".join(parts_fmt)
+    chunks_ui: list[dict[str, Any]] = []
+    for src, text, dist, meta in selected:
+        chunks_ui.append(
+            {
+                "source": src,
+                "chunk": str(meta.get("chunk", "")),
+                "text": text,
+                "distance": dist,
+            }
+        )
+    return rag_block, chunks_ui
+
+
+def retrieve_rag_context(collection: chromadb.Collection, question: str, k: int | None = None) -> str:
+    block, _ = retrieve_rag_context_and_chunks(collection, question, k=k)
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -1444,14 +2027,86 @@ def llm_chat_stream(
 def init_session_state() -> None:
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("data_source_mode", "auto")
+    st.session_state.setdefault("last_rag_chunks", [])
+    st.session_state.setdefault("last_rag_question", "")
+    st.session_state.setdefault("sleep_rep_phase", "idle")
+
+
+def _processing_status_sql_line(user_text: str, sql: str | None) -> str:
+    """Linha de status quando o plano usa dados estruturados: começa com CSV."""
+    blob = f"{user_text} {sql or ''}".lower()
+    if "alerg" in blob:
+        return "CSV — verificando alergias e cadastro de alunos…"
+    if "turma" in blob or ("infantil" in blob and "qual" in blob):
+        return "CSV — consultando turmas e cadastro de alunos…"
+    if any(
+        w in blob
+        for w in (
+            "diário",
+            "diario",
+            "refei",
+            "sono",
+            "lanche",
+            "evacu",
+            "medic",
+            "recado",
+        )
+    ):
+        return "CSV — consultando diário estruturado…"
+    return "CSV — consultando tabelas de cadastro e diário…"
+
+
+def _processing_status_rag_line(user_text: str) -> str:
+    """Linha de status quando o plano usa documentos: começa com PDF."""
+    ul = user_text.lower()
+    if "regimento" in ul or "norma" in ul or "regra" in ul:
+        return "PDF — regimento e normas da escola…"
+    if "ppp" in ul or "pedagóg" in ul or "pedagog" in ul:
+        return "PDF — PPP e documentos pedagógicos…"
+    if any(w in ul for w in ("cardápio", "cardapio", "nutri", "aliment")):
+        return "PDF — planejamento nutricional e cardápio…"
+    if "segurança" in ul or "seguranca" in ul or "saúde" in ul or "saude" in ul:
+        return "PDF — guia de saúde e segurança…"
+    if "nome" in ul and "escola" in ul:
+        return "PDF — identidade institucional nos documentos…"
+    return "PDF — documentos institucionais…"
+
+
+def _render_rag_sidebar_body(body: Any) -> None:
+    """Preenche o painel RAG depois que `last_rag_chunks` foi atualizado (mesmo run do Streamlit)."""
+    if body is None:
+        return
+    with body.container():
+        _chunks = st.session_state.get("last_rag_chunks") or []
+        _lq = (st.session_state.get("last_rag_question") or "").strip()
+        if not _chunks:
+            st.caption(
+                "Aparece aqui o trecho de PDF mais relevante usado na última resposta que consultou documentos."
+            )
+        else:
+            ch = _chunks[0]
+            if _lq:
+                st.caption(f"Pergunta: {_lq[:180]}{'…' if len(_lq) > 180 else ''}")
+            src = str(ch.get("source", "?"))
+            ck = ch.get("chunk")
+            dist = ch.get("distance")
+            meta_bits: list[str] = []
+            if ck not in (None, "", "?"):
+                meta_bits.append(f"índice {ck}")
+            if isinstance(dist, (int, float)):
+                meta_bits.append(f"distância {float(dist):.4f}")
+            with st.expander(src, expanded=False):
+                if meta_bits:
+                    st.caption(" · ".join(meta_bits))
+                txt = (ch.get("text") or "").strip()
+                if len(txt) > 4000:
+                    txt = txt[:4000] + "…"
+                st.text(txt)
 
 
 def main() -> None:
     st.set_page_config(page_title="Rotina Viva", layout="wide", initial_sidebar_state="expanded")
     init_session_state()
-
-    st.title("Rotina Viva")
-    st.caption("Assistente inteligente — PUCPR · AI Factory")
 
     with st.sidebar:
         st.subheader("Fonte da resposta")
@@ -1480,10 +2135,16 @@ def main() -> None:
         )
         if st.button("Limpar conversa"):
             st.session_state.messages = []
+            st.session_state.last_rag_chunks = []
+            st.session_state.last_rag_question = ""
             st.rerun()
 
+        st.divider()
+        st.markdown("**Trechos (RAG)**")
+        rag_sidebar_body = st.empty()
+
     try:
-        conn = get_duckdb_connection(str(DATA_DIR))
+        conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
     except Exception as e:
         st.error(f"Falha ao carregar DuckDB: {e}")
         conn = None
@@ -1504,6 +2165,26 @@ def main() -> None:
         except Exception as e:
             st.error(f"Falha ao preparar ChromaDB/embeddings: {e}")
 
+    _rep_phase = st.session_state.get("sleep_rep_phase", "idle")
+    _exp_relatorio = _rep_phase != "idle"
+    _logo_path = DATA_DIR / "logo_rotina_viva.png"
+    # Coluna central ~1/3 da largura (2× a faixa usada em [5,2,5]).
+    _lg_l, _lg_m, _lg_r = st.columns([1, 1, 1])
+    with _lg_m:
+        if _logo_path.is_file():
+            st.image(str(_logo_path), use_container_width=True)
+        else:
+            st.warning(
+                f"Logo não encontrada: `{_logo_path.name}`. "
+                "Coloque o arquivo em `ROTINA_DATA_DIR` (ex.: pasta `data/`)."
+            )
+        # Mesma coluna da logo: menos espaço vertical do que uma segunda linha de colunas.
+        with st.expander(
+            "Gerar Relatório de Rotina",
+            expanded=_exp_relatorio,
+        ):
+            render_sleep_meal_report_section(conn)
+
     if prompt := st.chat_input("Pergunte sobre rotinas, alunos ou documentos da escola…"):
         st.session_state.messages.append({"role": "user", "content": prompt})
 
@@ -1512,6 +2193,7 @@ def main() -> None:
             st.markdown(msg["content"])
 
     if not st.session_state.messages or st.session_state.messages[-1]["role"] != "user":
+        _render_rag_sidebar_body(rag_sidebar_body)
         return
 
     user_text = st.session_state.messages[-1]["content"]
@@ -1522,6 +2204,7 @@ def main() -> None:
         with st.chat_message("assistant"):
             st.error(err)
         st.session_state.messages.append({"role": "assistant", "content": err})
+        _render_rag_sidebar_body(rag_sidebar_body)
         return
 
     if mode_ds in ("auto", "documents") and collection is None:
@@ -1533,6 +2216,7 @@ def main() -> None:
         with st.chat_message("assistant"):
             st.error(err)
         st.session_state.messages.append({"role": "assistant", "content": err})
+        _render_rag_sidebar_body(rag_sidebar_body)
         return
 
     history_for_model = st.session_state.messages[:-1]
@@ -1543,38 +2227,74 @@ def main() -> None:
             plan_force = "sql_only"
         elif mode_ds == "documents":
             plan_force = "rag_only"
-        plan = normalize_plan(
-            llm_plan_sources(user_text, force=plan_force, history=history_for_model),
-            user_text,
-        )
-        plan = apply_user_data_source_mode(plan, mode_ds)
-        fontes = plan.get("fontes") or ["rag"]
-        if isinstance(fontes, str):
-            fontes = [fontes]
 
-        duck_block = "(nenhuma consulta SQL executada)"
-        if "sql" in fontes:
-            sql = plan.get("sql")
-            if isinstance(sql, str) and sql.strip():
-                duck_block, ok = run_safe_select(conn, sql)
-                if not ok:
-                    duck_block = f"{duck_block}\n(Tente reformular com nome do aluno ou data, se aplicável.)"
-            else:
-                duck_block = "Nenhuma consulta SQL válida foi gerada para esta pergunta."
+        progress_ui = st.empty()
+        with progress_ui.container():
+            with st.status("Processando sua pergunta…", expanded=True) as proc:
+                proc.write("Analisando a pergunta e planejando consultas…")
+                plan = normalize_plan(
+                    llm_plan_sources(
+                        user_text, force=plan_force, history=history_for_model
+                    ),
+                    user_text,
+                )
+                plan = apply_user_data_source_mode(plan, mode_ds)
+                fontes = plan.get("fontes") or ["rag"]
+                if isinstance(fontes, str):
+                    fontes = [fontes]
 
-        rag_block = "(busca em documentos não solicitada)"
-        if "rag" in fontes and collection is not None:
-            rag_block = retrieve_rag_context(collection, user_text, k=RAG_TOP_K)
+                duck_block = "(nenhuma consulta SQL executada)"
+                if "sql" in fontes:
+                    sql = plan.get("sql")
+                    if isinstance(sql, str) and sql.strip():
+                        proc.write(_processing_status_sql_line(user_text, sql))
+                        duck_block, ok = run_safe_select(conn, sql)
+                        if not ok:
+                            duck_block = (
+                                f"{duck_block}\n"
+                                "(Tente reformular com nome do aluno ou data, se aplicável.)"
+                            )
+                    else:
+                        proc.write("CSV — preparando consulta nas tabelas…")
+                        duck_block = (
+                            "Nenhuma consulta SQL válida foi gerada para esta pergunta."
+                        )
 
-        if _use_openai_compatible_chat() and ROTINA_API_PLAN_TO_CHAT_DELAY_SEC > 0:
-            time.sleep(ROTINA_API_PLAN_TO_CHAT_DELAY_SEC)
+                rag_block = "(busca em documentos não solicitada)"
+                if "rag" in fontes and collection is not None:
+                    proc.write(_processing_status_rag_line(user_text))
+                    rag_block, _rag_chunks = retrieve_rag_context_and_chunks(
+                        collection, user_text, k=RAG_TOP_K
+                    )
+                    st.session_state.last_rag_chunks = _rag_chunks
+                    st.session_state.last_rag_question = user_text
+                else:
+                    st.session_state.last_rag_chunks = []
+                    st.session_state.last_rag_question = ""
+                    if "rag" in fontes:
+                        proc.write("PDF — indisponível no momento (índice ou ambiente).")
+
+                if (
+                    _use_openai_compatible_chat()
+                    and ROTINA_API_PLAN_TO_CHAT_DELAY_SEC > 0
+                ):
+                    time.sleep(ROTINA_API_PLAN_TO_CHAT_DELAY_SEC)
 
         def _gen() -> Generator[str, None, None]:
-            yield from llm_chat_stream(user_text, duck_block, rag_block, history_for_model)
+            yield from llm_chat_stream(
+                user_text, duck_block, rag_block, history_for_model
+            )
 
-        full = st.write_stream(_gen) or ""
+        _streamed = st.write_stream(_gen()) or ""
+        full = (
+            _streamed
+            if isinstance(_streamed, str)
+            else "".join(str(x) for x in _streamed)
+        )
+        progress_ui.empty()
 
     st.session_state.messages.append({"role": "assistant", "content": full})
+    _render_rag_sidebar_body(rag_sidebar_body)
 
 
 if __name__ == "__main__":
