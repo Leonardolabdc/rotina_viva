@@ -1,4 +1,4 @@
-streamlit>=1.33,<2
+streamlit>=1.40,<2
 pandas>=2.0,<3
 python-dotenv>=1.0,<2
 duckdb>=1.0,<2
@@ -8,3 +8,4 @@ txtai>=6.0,<10
 pypdf>=4.0,<6
 httpx>=0.27,<1
 openai>=1.0,<2
+SpeechRecognition>=3.10,<4

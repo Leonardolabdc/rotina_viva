@@ -6,6 +6,7 @@ Streamlit + DuckDB (CSVs) + ChromaDB (RAG) + txtai (segmentação) + LLM/embeddi
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import random
@@ -20,6 +21,7 @@ import duckdb
 import httpx
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from pypdf import PdfReader
 from txtai.pipeline import Segmentation
@@ -66,6 +68,20 @@ OPENAI_API_KEY = (
 )
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 OPENAI_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini").strip()
+
+# Transcrição de voz (Whisper HTTP). Docker Compose define URL do serviço `whisper` (sem chave).
+# API OpenAI: use OPENAI_TRANSCRIBE_BASE_URL=https://api.openai.com/v1 e OPENAI_TRANSCRIBE_API_KEY (ou só chave no .env com URL da OpenAI).
+OPENAI_TRANSCRIBE_BASE_URL = os.getenv(
+    "OPENAI_TRANSCRIBE_BASE_URL", "https://api.openai.com/v1"
+).strip().rstrip("/")
+OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
+_stt_key_raw = os.getenv("OPENAI_TRANSCRIBE_API_KEY", "").strip()
+if _stt_key_raw:
+    OPENAI_TRANSCRIBE_API_KEY = _stt_key_raw
+elif "api.openai.com" in OPENAI_TRANSCRIBE_BASE_URL:
+    OPENAI_TRANSCRIBE_API_KEY = OPENAI_API_KEY
+else:
+    OPENAI_TRANSCRIBE_API_KEY = ""
 
 # Embeddings no Chroma: ollama (local) ou openrouter / openai (API compatível com OpenAI).
 ROTINA_EMBED_PROVIDER = os.getenv("ROTINA_EMBED_PROVIDER", "ollama").strip().lower()
@@ -161,6 +177,29 @@ ROTINA_STREAM_MAX_SECONDS = _env_float("ROTINA_STREAM_MAX_SECONDS", 600.0)
 ROTINA_CHAT_TEMPERATURE = _env_float("ROTINA_CHAT_TEMPERATURE", 0.35)
 ROTINA_CHAT_TEMP_WITH_SQL = _env_float("ROTINA_CHAT_TEMP_WITH_SQL", 0.12)
 
+# Relatório sono/alimentação: teto de minutos (ex.: 60) e faixas **dentro** de 0…teto.
+# Classificação: [0, L1) pouco, [L1, L2) normal, [L2, teto] bastante (minutos > teto viram teto).
+# Exemplo com padrão L1=20, L2=40 e teto 60: ~10 min → pouco, ~35 min → normal, 60 min → bastante.
+if os.getenv("ROTINA_SONO_MAX_MIN", "").strip():
+    ROTINA_SONO_MAX_MIN = max(15.0, min(180.0, _env_float("ROTINA_SONO_MAX_MIN", 60.0)))
+else:
+    ROTINA_SONO_MAX_MIN = max(15.0, min(180.0, _env_float("ROTINA_SONO_REFERENCIA_MIN", 60.0)))
+ROTINA_SONO_FAIXA_LIMITE_1 = max(
+    1.0, min(ROTINA_SONO_MAX_MIN - 2.0, _env_float("ROTINA_SONO_FAIXA_LIMITE_1", 20.0))
+)
+ROTINA_SONO_FAIXA_LIMITE_2 = max(
+    ROTINA_SONO_FAIXA_LIMITE_1 + 1.0,
+    min(ROTINA_SONO_MAX_MIN - 1.0, _env_float("ROTINA_SONO_FAIXA_LIMITE_2", 40.0)),
+)
+
+# Valores canônicos para `qualidade_sono` no diário (CSV + relatório).
+SONO_QUAL_BASTANTE = "Dormiu bastante"
+SONO_QUAL_POUCO = "Dormiu pouco"
+SONO_QUAL_PADRAO = (
+    f"Dormiu normal ({int(round(ROTINA_SONO_FAIXA_LIMITE_1))}–"
+    f"{int(round(ROTINA_SONO_FAIXA_LIMITE_2))} min)"
+)
+
 
 def effective_chroma_add_batch() -> int:
     if ROTINA_EMBED_PROVIDER in ("openrouter", "openai"):
@@ -242,7 +281,8 @@ SYSTEM_PERSONA = """Você é o assistente "Rotina Viva", da escola infantil.
 SYSTEM_GROUNDING = """Leia o contexto abaixo antes de responder.
 - Priorize fatos que estejam escritos nos trechos ou na tabela.
 - Só diga que uma informação não aparece se, depois de verificar o contexto, ela de fato não estiver lá.
-- Para perguntas sobre identidade da escola, procure linhas como nome fantasia, cabeçalho, "Escola ..." ou campo "Título:" nos documentos."""
+- Para perguntas sobre identidade da escola, procure linhas como nome fantasia, cabeçalho, "Escola ..." ou campo "Título:" nos documentos.
+- Responda ao que a **pergunta atual** pede. Não acrescente observações sobre nomes ou assuntos que só surgiram em **mensagens anteriores** do chat: o bloco de contexto desta rodada costuma estar filtrado à pergunta de agora, e a ausência de um nome nesse bloco **não** autoriza dizer "não há informações sobre [fulano]" se o utilizador **não perguntou** por essa pessoa nesta mensagem."""
 
 SYSTEM_SQL_STRICT = """Dados tabulares (bloco "Dados tabulares" acima):
 - A tabela é o resultado **literal** de uma consulta ao banco. Trate cada célula como dado real já filtrado.
@@ -250,7 +290,8 @@ SYSTEM_SQL_STRICT = """Dados tabulares (bloco "Dados tabulares" acima):
 - Se a tabela estiver vazia ou disser "(nenhuma linha retornada)", diga isso claramente — não preencha com suposições.
 - Para contar, listar ou comparar, use **apenas** o que está nas linhas mostradas (e o número da coluna "linha" se existir).
 - Se a pergunta pedir algo que a tabela não contém (coluna ausente), diga que o resultado atual não traz esse campo.
-- Se várias linhas tiverem o mesmo nome e turmas diferentes, isso vem do cadastro (homônimos ou duplicidade): cite `id_aluno` de cada linha e não assuma um único aluno sem explicar."""
+- Se várias linhas tiverem o mesmo nome e turmas diferentes, isso vem do cadastro (homônimos ou duplicidade): cite `id_aluno` de cada linha e não assuma um único aluno sem explicar.
+- Esta tabela reflete a **pergunta atual**; não conclua pela omissão de nomes aqui que "não há dados" sobre alguém que o utilizador **não citou** nesta pergunta."""
 
 _ASKS_SCHOOL_NAME = re.compile(
     r"(qual\s+[ée]\s+o\s+nome\s+da\s+escola|nome\s+da\s+escola|como\s+se\s+chama\s+a\s+escola)",
@@ -335,6 +376,9 @@ Tabelas DuckDB (somente leitura; use SELECT):
    trocas_banheiro (INTEGER), evacuacao (TEXT), medicamentos (TEXT),
    hora_sono_inicio, hora_sono_fim (TEXT), qualidade_sono (TEXT),
    atividade_dia (TEXT), interacao_social (TEXT), recado_professora (TEXT)
+   **qualidade_sono:** padronize com um destes textos (teto e faixas: `ROTINA_SONO_MAX_MIN`, `ROTINA_SONO_FAIXA_LIMITE_1`, `ROTINA_SONO_FAIXA_LIMITE_2` no `.env`):
+   `Dormiu bastante`, `Dormiu pouco`, e `Dormiu normal (L1–L2 min)` conforme configurado.
+   Textos antigos (ex.: “acordou agitado”) ainda carregam: o relatório normaliza para essas três categorias.
 
 Para juntar aluno e diário (ex.: refeições de um aluno por nome):
    `FROM diario_estruturado d JOIN info_alunos a ON d.id_aluno = a.id_aluno WHERE a.nome ILIKE '%...%'`
@@ -864,16 +908,136 @@ def _parse_clock_to_minutes(s: Any) -> int | None:
 
 
 def _sleep_minutes_between(start: Any, end: Any) -> int | None:
+    """
+    Duração em minutos entre dois horários do mesmo dia (relógio 24 h).
+
+    Usa o **menor** arco entre os dois instantes no círculo de 24 h, para que
+    `inicio=13:00` e `fim=12:00` (colunas trocadas vs. 12:00→13:00) resulte em
+    **60 min**, e não ~23 h (bug que marcava todos como “Dormiu bastante”).
+    Ignora durações irreais para soneca escolar (> 4 h).
+    """
     a = _parse_clock_to_minutes(start)
     b = _parse_clock_to_minutes(end)
     if a is None or b is None:
         return None
-    d = b - a
-    if d < 0:
-        d += 24 * 60
-    if d <= 0:
+    d = (b - a) % (24 * 60)
+    if d == 0:
         return None
-    return d
+    d_short = min(d, 24 * 60 - d)
+    if d_short <= 0:
+        return None
+    if d_short > 240:
+        return None
+    return int(d_short)
+
+
+def _classify_sono_min_for_report(sono_min: float) -> str:
+    """
+    Classifica minutos de sono para o relatório: valores são limitados a `ROTINA_SONO_MAX_MIN`.
+    Faixas: [0, L1) pouco, [L1, L2) normal, [L2, teto] bastante (`ROTINA_SONO_FAIXA_LIMITE_*`).
+    """
+    cap = float(ROTINA_SONO_MAX_MIN)
+    l1 = float(ROTINA_SONO_FAIXA_LIMITE_1)
+    l2 = float(ROTINA_SONO_FAIXA_LIMITE_2)
+    m = max(0.0, min(float(sono_min), cap))
+    if m < l1:
+        return SONO_QUAL_POUCO
+    if m < l2:
+        return SONO_QUAL_PADRAO
+    return SONO_QUAL_BASTANTE
+
+
+def _normalize_qualidade_sono_val(raw: str, sono_min: Any) -> str:
+    """
+    Reduz `qualidade_sono` do CSV a uma das três categorias canônicas.
+    Prioridade: texto reconhecível → inferência por minutos (horários início/fim) → "—".
+    """
+    t = (raw or "").strip().lower()
+    if t in ("—", "-", "", "nan", "none"):
+        t = ""
+
+    exact = {
+        SONO_QUAL_BASTANTE.lower(): SONO_QUAL_BASTANTE,
+        SONO_QUAL_POUCO.lower(): SONO_QUAL_POUCO,
+        SONO_QUAL_PADRAO.lower(): SONO_QUAL_PADRAO,
+    }
+    if t in exact:
+        return exact[t]
+    if t.startswith("sono no padrão") or t.startswith("sono no padrao"):
+        return SONO_QUAL_PADRAO
+
+    # Variações comuns / legado (ordem: sinais de sono ruim curto, depois pouco, bastante, padrão).
+    if any(
+        k in t
+        for k in (
+            "acordou agit",
+            "muito agit",
+            "sono agit",
+            "interrup",
+            "chorou muito",
+            "acordou cedo",
+            "não dormiu",
+            "nao dormiu",
+            "quase não dorm",
+        )
+    ):
+        return SONO_QUAL_POUCO
+    if any(
+        k in t
+        for k in (
+            "dormiu pouco",
+            "pouco sono",
+            "sono curto",
+            "descanso curto",
+            "dormiu mal",
+        )
+    ):
+        return SONO_QUAL_POUCO
+    if any(
+        k in t
+        for k in (
+            "dormiu bastante",
+            "bastante sono",
+            "sono longo",
+            "dormiu bem",
+            "dormiu tranquilo",
+            "sono tranquilo",
+            "bom sono",
+            "descanso bom",
+            "dormiu o dia",
+        )
+    ):
+        return SONO_QUAL_BASTANTE
+    if any(
+        k in t
+        for k in (
+            "dormiu normal",
+            "no padrão",
+            "no padrao",
+            "padrão da",
+            "padrao da",
+            "média da semana",
+            "media da semana",
+            "sono normal",
+            "sono moderado",
+            "sono regular",
+            "sono leve",
+            "padrão (~60",
+            "padrao (~60",
+        )
+    ):
+        return SONO_QUAL_PADRAO
+
+    sm: float | None
+    try:
+        sm = float(sono_min) if sono_min is not None and pd.notna(sono_min) else None
+    except (TypeError, ValueError):
+        sm = None
+    if sm is not None and sm > 0:
+        if sm <= 240:
+            return _classify_sono_min_for_report(sm)
+        return "—"
+    return "—"
 
 
 def build_sleep_meal_report_dataframe(
@@ -1028,6 +1192,14 @@ def build_sleep_meal_report_dataframe(
 
     df_w["dia"] = df_w["data_dt"].dt.normalize()
 
+    _cap = float(ROTINA_SONO_MAX_MIN)
+    df_w["sono_min"] = pd.to_numeric(df_w["sono_min"], errors="coerce").clip(lower=0, upper=_cap)
+
+    df_w["qualidade_sono"] = [
+        _normalize_qualidade_sono_val(str(q), sm)
+        for q, sm in zip(df_w["qualidade_sono"], df_w["sono_min"])
+    ]
+
     def _qual_pick(s: pd.Series) -> str:
         m = s.mode()
         return str(m.iloc[0]) if len(m) > 0 else str(s.iloc[0])
@@ -1076,12 +1248,124 @@ def build_sleep_meal_report_dataframe(
     return daily, daily_meals, None, resolved, aviso, periodo
 
 
-def _sleep_hours_line_chart_df(daily: pd.DataFrame) -> pd.DataFrame:
-    d = daily.sort_values("dia")
+def _sleep_line_chart_altair(daily: pd.DataFrame) -> alt.Chart:
+    """Tendência de horas + linha no teto do relatório; pontos coloridos pela classificação (CSV / faixas)."""
+    cap_m = float(ROTINA_SONO_MAX_MIN)
+    cap_h = cap_m / 60.0
+    d = daily.sort_values("dia").copy()
+    d["data_show"] = d["dia"].map(lambda x: pd.Timestamp(x).strftime("%d/%m"))
+    lk = _daily_sleep_lookup_for_ref_table(daily)
+    m = d.merge(lk[["data_show", "vs_escola"]], on="data_show", how="left")
+    line_df = pd.DataFrame(
+        {
+            "Data": pd.to_datetime(m["dia"], errors="coerce").dt.normalize(),
+            "Horas de sono": (pd.to_numeric(m["sono_min"], errors="coerce") / 60.0).round(2),
+            "Classificação": m["vs_escola"].fillna("—").astype(str).str.strip(),
+        }
+    )
+    _cmap = {
+        SONO_QUAL_POUCO: "#c0392b",
+        SONO_QUAL_PADRAO: "#2980b9",
+        SONO_QUAL_BASTANTE: "#1a9850",
+        "—": "#aeb6bf",
+    }
+    _order = [SONO_QUAL_POUCO, SONO_QUAL_PADRAO, SONO_QUAL_BASTANTE, "—"]
+    _present = [c for c in _order if c in set(line_df["Classificação"])]
+    for c in sorted(line_df["Classificação"].unique()):
+        if c not in _present:
+            _present.append(c)
+    _colors = [_cmap.get(c, "#7f8c8d") for c in _present]
+
+    base = alt.Chart(line_df).encode(
+        x=alt.X(
+            "Data:T",
+            title="Data",
+            axis=alt.Axis(format="%d/%m", labelAngle=0),
+        ),
+        y=alt.Y("Horas de sono:Q", title="Horas de sono"),
+    )
+    line = base.mark_line(strokeWidth=2, color="#34495e", interpolate="monotone")
+    pts = base.mark_point(filled=True, size=95, stroke="white", strokeWidth=1).encode(
+        color=alt.Color(
+            "Classificação:N",
+            title="Classificação",
+            scale=alt.Scale(domain=_present, range=_colors),
+            legend=alt.Legend(orient="bottom", direction="horizontal", labelLimit=0),
+        ),
+        tooltip=[
+            alt.Tooltip("Data:T", title="Data", format="%d/%m/%Y"),
+            alt.Tooltip("Horas de sono", title="Horas", format=".2f"),
+            alt.Tooltip("Classificação", title="Classificação"),
+        ],
+    )
+    rule_df = pd.DataFrame({"hora_teto": [cap_h]})
+    rule = (
+        alt.Chart(rule_df)
+        .mark_rule(
+            color="#e67e22",
+            strokeDash=[6, 4],
+            strokeWidth=2,
+        )
+        .encode(
+            y=alt.Y("hora_teto:Q", title="Horas de sono"),
+            tooltip=alt.value(f"Teto do relatório ({cap_m:.0f} min)"),
+        )
+    )
+    return (line + pts + rule).properties(height=280).interactive()
+
+
+def _vs_escola_from_csv_or_minutos(qualidade: Any, sono_min: Any) -> str:
+    """
+    Texto da coluna “Vs. referência escola”: prioriza `qualidade_sono` já normalizada
+    no agregado diário (veio do CSV). Só usa minutos se o CSV não tiver categoria.
+    """
+    q = str(qualidade if qualidade is not None else "").strip()
+    if q and q not in ("—", "-", "nan", "none", "NaN"):
+        return q
+    try:
+        sm = float(sono_min)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(sm) or sm <= 0:
+        return "—"
+    return _classify_sono_min_for_report(sm)
+
+
+def _daily_sleep_lookup_for_ref_table(daily: pd.DataFrame | None) -> pd.DataFrame:
+    """
+    Uma linha por dia do relatório, mesma chave `data_show` (dd/mm) usada no gráfico de refeições.
+
+    - **min_diario:** média dos minutos já limitada ao teto (`ROTINA_SONO_MAX_MIN`).
+    - **vs_escola:** **`qualidade_sono` do CSV** (normalizada por dia); se vazio, classifica pelos minutos (mesmo teto).
+    """
+    empty = pd.DataFrame(columns=["data_show", "min_diario", "vs_escola"])
+    if daily is None or daily.empty or "sono_min" not in daily.columns:
+        return empty
+    d = daily.sort_values("dia").copy()
+    d["data_show"] = d["dia"].map(lambda x: pd.Timestamp(x).strftime("%d/%m"))
+    sm = pd.to_numeric(d["sono_min"], errors="coerce")
+    d["min_diario"] = sm.round().astype("Int64")
+    quals = d["qualidade_sono"] if "qualidade_sono" in d.columns else pd.Series([""] * len(d))
+    d["vs_escola"] = [
+        _vs_escola_from_csv_or_minutos(q, smv)
+        for q, smv in zip(quals, sm.astype(float))
+    ]
+    out = d[["data_show", "min_diario", "vs_escola"]].drop_duplicates(subset=["data_show"])
+    return out
+
+
+def _sleep_reference_table_ui(daily: pd.DataFrame | None) -> pd.DataFrame:
+    """Uma linha por dia: minutos no diário + classificação (mesma lógica do gráfico de sono)."""
+    lk = _daily_sleep_lookup_for_ref_table(daily)
+    if lk.empty:
+        return pd.DataFrame(columns=["Dia", "Min. sono (diário)", "Classificação"])
     return pd.DataFrame(
         {
-            "Data": d["dia"].dt.strftime("%Y-%m-%d"),
-            "Horas de sono": (d["sono_min"] / 60.0).round(2),
+            "Dia": lk["data_show"],
+            "Min. sono (diário)": lk["min_diario"].map(
+                lambda x: f"{int(x)} min" if pd.notna(x) else "—"
+            ),
+            "Classificação": lk["vs_escola"].astype(str),
         }
     )
 
@@ -1105,7 +1389,7 @@ def _meal_intake_stacked_bar_altair(
 ) -> tuple[alt.Chart, pd.DataFrame]:
     """
     Barras empilhadas (café → almoço → lanche, de baixo para cima), cor = classificação da ingestão.
-    Retorna o gráfico Altair e uma tabela para referência completa abaixo do gráfico.
+    Retorna o gráfico e a tabela **só de refeições** (Dia, Refeição, texto). A tabela de sono fica à parte.
     """
     meal_pt = {
         "cafe_manha": "Café da manhã",
@@ -1187,15 +1471,14 @@ def _meal_intake_stacked_bar_altair(
         .properties(height=260)
     )
 
-    ref_tbl = bar_df.rename(
+    ref_meals = bar_df.rename(
         columns={
             "data_show": "Dia",
             "refeicao": "Refeição",
             "registro": "Texto registrado",
-            "status": "Classificação",
         }
-    )[["Dia", "Refeição", "Texto registrado", "Classificação"]]
-    return chart, ref_tbl
+    )[["Dia", "Refeição", "Texto registrado"]]
+    return chart, ref_meals
 
 
 def sleep_meal_report_summary_md(
@@ -1224,26 +1507,34 @@ def sleep_meal_report_summary_md(
         )
     else:
         parts.append(f"**{n}** dia(s) com refeições e sono registrados.")
+    cap_m = int(round(ROTINA_SONO_MAX_MIN))
+    l1 = int(round(ROTINA_SONO_FAIXA_LIMITE_1))
+    l2 = int(round(ROTINA_SONO_FAIXA_LIMITE_2))
     parts.append(
         f"Ingestão combinada (quatro momentos, 0–8): média **{mi:.1f}** "
         f"(mín. {mn_ing:.1f}, máx. {mx_ing:.1f}). "
-        f"Sono na rotina: média **{ms:.0f} min** entre início e fim.",
+        f"Sono (horários do CSV, **no máximo {cap_m} min** por registro): média **{ms:.0f} min** por dia. "
+        f"**Classificação:** **pouco** abaixo de {l1} min, **normal** entre {l1} e {l2} min, **bastante** a partir de {l2} min "
+        f"(até {cap_m} min). **Qualidade do sono** segue três categorias canônicas alinhadas a essas faixas."
     )
     try:
-        by_q = df.groupby("qualidade_sono", dropna=False)["ingestao"].mean().sort_values(
-            ascending=False
-        )
+        _dfq = df[df["qualidade_sono"].astype(str).str.strip() != "—"]
+        if _dfq.empty:
+            by_q = pd.Series(dtype=float)
+        else:
+            by_q = _dfq.groupby("qualidade_sono", dropna=False)["ingestao"].mean().sort_values(
+                ascending=False
+            )
         if len(by_q) > 1:
             top = by_q.index[0]
             parts.append(
-                f"Entre os rótulos de **qualidade do sono**, a maior média de ingestão "
-                f"aparece em registros classificados como “{top}”. "
+                f"Entre essas **categorias de sono**, a maior média de ingestão aparece em “{top}”. "
                 "Isso descreve o conjunto de dados, não causa médica ou pedagógica."
             )
         elif len(by_q) == 1:
             parts.append(
-                "Todos os registros compartilham o mesmo rótulo de qualidade de sono; "
-                "compare períodos ou turmas no futuro para ver tendências."
+                "Todos os dias deste recorte compartilham a mesma categoria de sono após padronização; "
+                "compare outras semanas ou turmas para ver tendências."
             )
     except Exception:
         pass
@@ -1343,33 +1634,70 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
 
     j_ini, j_fim = (periodo or ("", ""))
 
-    st.markdown("**Sono** — tendência (horas por dia)")
-    st.caption(
-        "Horas calculadas pela diferença entre **`hora_sono_fim`** e **`hora_sono_inicio`** "
-        "(média do dia, se houver mais de um registro)."
-    )
-    line_df = _sleep_hours_line_chart_df(df)
-    st.line_chart(line_df, x="Data", y="Horas de sono")
+    sono_chart = _sleep_line_chart_altair(df)
+    bar_chart, ref_meals = _meal_intake_stacked_bar_altair(daily_meals)
+    tbl_sono = _sleep_reference_table_ui(df)
 
-    st.markdown("**Alimentação** — café, almoço e lanche (distribuição na semana)")
-    st.caption(
-        "Cada coluna é um dia. **De baixo para cima:** café da manhã, almoço e lanche. "
-        "As **cores** seguem a classificação da ingestão (legenda abaixo do gráfico). "
-        "Passe o cursor sobre os segmentos para ver o texto completo registrado pela escola."
-    )
-    bar_chart, ref_tbl = _meal_intake_stacked_bar_altair(daily_meals)
-    st.altair_chart(bar_chart, use_container_width=True)
-    st.markdown("**Referências — texto registrado por dia e refeição**")
-    st.dataframe(
-        ref_tbl,
-        hide_index=True,
-        use_container_width=True,
-        height=min(320, 36 + len(ref_tbl) * 35),
-    )
+    _gcol_sono, _gcol_meal = st.columns(2, gap="medium")
+    with _gcol_sono:
+        st.markdown("**Sono** — tendência (horas por dia)")
+        st.caption(
+            "Curva: **horas por dia** (média do dia; cada registro **no máximo** "
+            f"{int(round(ROTINA_SONO_MAX_MIN))} min). Linha tracejada: **teto** ({int(round(ROTINA_SONO_MAX_MIN))} min). "
+            "Cores = **classificação** (mesma da tabela): "
+            f"pouco abaixo de {int(round(ROTINA_SONO_FAIXA_LIMITE_1))} min, "
+            f"normal entre {int(round(ROTINA_SONO_FAIXA_LIMITE_1))} e {int(round(ROTINA_SONO_FAIXA_LIMITE_2))} min, "
+            f"bastante acima de {int(round(ROTINA_SONO_FAIXA_LIMITE_2))} min."
+        )
+        st.altair_chart(sono_chart, use_container_width=True)
+    with _gcol_meal:
+        st.markdown("**Alimentação** — café, almoço e lanche (distribuição na semana)")
+        st.caption(
+            "Cada coluna é um dia. **De baixo para cima:** café da manhã, almoço e lanche. "
+            "As **cores** seguem a classificação da ingestão (legenda abaixo do gráfico). "
+            "Passe o cursor sobre os segmentos para ver o texto completo registrado pela escola."
+        )
+        st.altair_chart(bar_chart, use_container_width=True)
+    st.markdown("**Referências por dia**")
+    _t_sono, _t_meal = st.columns(2, gap="medium")
+    with _t_sono:
+        st.markdown("##### Sono")
+        st.caption(
+            "**Minutos:** média diária pelos horários do CSV (**cortada em** "
+            f"{int(round(ROTINA_SONO_MAX_MIN))} min). **Classificação:** `qualidade_sono` do CSV quando houver; senão, pelas faixas. "
+            f"“**Dormiu normal**” = entre **{int(round(ROTINA_SONO_FAIXA_LIMITE_1))}** e "
+            f"**{int(round(ROTINA_SONO_FAIXA_LIMITE_2))} min** (sobre 0–{int(round(ROTINA_SONO_MAX_MIN))} min)."
+        )
+        st.dataframe(
+            tbl_sono,
+            hide_index=True,
+            use_container_width=True,
+            height=min(320, 40 + max(1, len(tbl_sono)) * 38),
+        )
+    with _t_meal:
+        st.markdown("##### Refeições (texto registrado)")
+        st.caption("Café da manhã, almoço e lanche — mesmo período do gráfico de barras.")
+        st.dataframe(
+            ref_meals,
+            hide_index=True,
+            use_container_width=True,
+            height=min(420, 40 + max(1, len(ref_meals)) * 35),
+        )
     st.markdown(sleep_meal_report_summary_md(df, label, j_ini or None, j_fim or None))
-    if st.button("Fechar", key="sleep_rep_close_ok"):
-        st.session_state.sleep_rep_phase = "idle"
-        st.rerun()
+    _br_new, _br_close = st.columns(2, gap="small")
+    with _br_new:
+        if st.button(
+            "Gerar Novo Relatório",
+            key="sleep_rep_new_report",
+            use_container_width=True,
+            help="Volta ao formulário para informar outro aluno.",
+        ):
+            st.session_state.sleep_rep_phase = "ask_name"
+            st.rerun()
+    with _br_close:
+        if st.button("Fechar", key="sleep_rep_close_ok", use_container_width=True):
+            st.session_state.sleep_rep_phase = "idle"
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -2024,12 +2352,160 @@ def llm_chat_stream(
 # ---------------------------------------------------------------------------
 
 
+def _whisper_upload_name_and_mime(audio_bytes: bytes, reported_name: str) -> tuple[str, str]:
+    """
+    O Streamlit costuma gravar WebM no navegador, mas o nome do ficheiro pode ser .wav.
+    Ajusta extensão e MIME com base nos magic bytes para o ffmpeg do Whisper aceitar o ficheiro.
+    """
+    raw = (reported_name or "").strip() or "gravacao"
+    base = raw.rsplit(".", 1)[0] if "." in raw else raw
+    b = audio_bytes
+    if len(b) >= 12 and b[:4] == b"RIFF" and b[8:12] == b"WAVE":
+        return f"{base}.wav", "audio/wav"
+    if len(b) >= 4 and b[0] == 0x1A and b[1:4] == b"\x45\xdf\xa3":
+        return f"{base}.webm", "audio/webm"
+    if len(b) >= 4 and b[:4] == b"OggS":
+        return f"{base}.ogg", "audio/ogg"
+    if len(b) >= 3 and b[:3] == b"ID3":
+        return f"{base}.mp3", "audio/mpeg"
+    if len(b) >= 2 and b[0] == 0xFF and (b[1] & 0xE0) == 0xE0:
+        return f"{base}.mp3", "audio/mpeg"
+    low = raw.lower()
+    if low.endswith(".webm"):
+        return raw, "audio/webm"
+    if low.endswith(".ogg"):
+        return raw, "audio/ogg"
+    if low.endswith(".mp3"):
+        return raw, "audio/mpeg"
+    # Gravação típica do browser (Chrome/Edge): WebM, por vezes com nome enganador.
+    return f"{base}.webm", "audio/webm"
+
+
+def _rotina_st_audio_format(audio_bytes: bytes) -> str:
+    """MIME/formato para `st.audio` a partir dos bytes (mesma heurística que o Whisper)."""
+    _, mime = _whisper_upload_name_and_mime(audio_bytes, "gravacao.wav")
+    return {
+        "audio/wav": "audio/wav",
+        "audio/webm": "audio/webm",
+        "audio/ogg": "audio/ogg",
+        "audio/mpeg": "audio/mp3",
+    }.get(mime, "audio/wav")
+
+
+def _transcribe_whisper_http(audio_bytes: bytes, filename: str) -> tuple[str | None, str | None]:
+    """Whisper via API compatível com OpenAI (multipart). Chave opcional. Retorna (texto, erro)."""
+    if not audio_bytes:
+        return None, "Nenhum dado de áudio para enviar ao Whisper."
+    base = (OPENAI_TRANSCRIBE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None, "URL de transcrição não configurada (`OPENAI_TRANSCRIBE_BASE_URL`)."
+    key = (OPENAI_TRANSCRIBE_API_KEY or "").strip()
+    upload_name, mime = _whisper_upload_name_and_mime(audio_bytes, filename)
+    url = f"{base}/audio/transcriptions"
+    try:
+        headers: dict[str, str] = {}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        r = httpx.post(
+            url,
+            headers=headers,
+            files={"file": (upload_name, audio_bytes, mime)},
+            data={
+                "model": OPENAI_TRANSCRIBE_MODEL or "whisper-1",
+                "language": "pt",
+            },
+            timeout=httpx.Timeout(180.0, connect=30.0),
+        )
+        if r.status_code >= 400:
+            detail = (r.text or "").strip().replace("\n", " ")
+            if len(detail) > 400:
+                detail = detail[:400] + "…"
+            return None, f"Whisper respondeu {r.status_code}: {detail or 'sem detalhe'}"
+        try:
+            out = r.json()
+        except json.JSONDecodeError:
+            raw = (r.text or "").strip()
+            if not raw:
+                return None, "Whisper respondeu 200 mas o corpo estava vazio."
+            return raw, None
+        if not isinstance(out, dict):
+            return None, f"Whisper devolveu JSON inesperado: {type(out).__name__}"
+        t = (out.get("text") or "").strip()
+        if not t:
+            return None, (
+                "Whisper respondeu OK mas sem texto (~"
+                f"{len(audio_bytes)} bytes de áudio). Atualize e recrie os contentores "
+                "(`docker compose ... --force-recreate whisper` e `--build rotina-viva`). "
+                "Ouça a reprodução no widget: se não ouvir a sua voz, o navegador pode estar noutro microfone "
+                "(cadeado → permissões do site → microfone). "
+                "Se ouvir bem e mesmo assim vazio, em `docker-compose.yml` experimente `WHISPER_MODEL: small`."
+            )
+        return t, None
+    except httpx.ConnectError:
+        return None, (
+            f"Não foi possível ligar ao Whisper em `{base}`. "
+            "Confirme `docker compose up`, espere o modelo carregar (`docker logs rotina-whisper`) "
+            "e, se corre o Streamlit **fora** do Docker, use no `.env`: "
+            "`OPENAI_TRANSCRIBE_BASE_URL=http://127.0.0.1:9000/v1`."
+        )
+    except httpx.TimeoutException:
+        return None, (
+            "Tempo esgotado ao transcrever. O primeiro uso do Whisper pode demorar; tente de novo."
+        )
+    except Exception as e:
+        return None, f"Erro ao chamar Whisper: {type(e).__name__}: {e!s}"[:400]
+
+
+def _transcribe_google_sr(audio_bytes: bytes) -> str | None:
+    """Fallback: Google Web Speech API (requer rede; áudio em WAV)."""
+    try:
+        import speech_recognition as sr  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+    r = sr.Recognizer()
+    try:
+        with sr.AudioFile(io.BytesIO(audio_bytes)) as source:
+            audio = r.record(source)
+        return (r.recognize_google(audio, language="pt-BR") or "").strip() or None
+    except Exception:
+        return None
+
+
+def transcribe_voice_bytes(audio_bytes: bytes, filename: str) -> tuple[str | None, str | None]:
+    """
+    Retorna (texto, erro). Tenta Whisper (HTTP) e depois reconhecimento Google.
+    """
+    if not audio_bytes or len(audio_bytes) < 80:
+        return (
+            None,
+            "Gravação muito curta ou vazia. Grave novamente por alguns segundos.",
+        )
+    txt, werr = _transcribe_whisper_http(audio_bytes, filename)
+    if txt:
+        return txt, None
+    gtxt = _transcribe_google_sr(audio_bytes)
+    if gtxt:
+        return gtxt, None
+    if werr:
+        return None, werr
+    return (
+        None,
+        "Não foi possível transcrever o áudio (sem resposta útil do Whisper nem do fallback Google). "
+        "Confirme o serviço **Whisper** (`docker compose up`, `docker logs rotina-whisper`). "
+        "Se corre o Streamlit **no PC** (fora do Docker), no `.env` use "
+        "`OPENAI_TRANSCRIBE_BASE_URL=http://127.0.0.1:9000/v1` (não `http://whisper:...`). "
+        "Alternativa: API OpenAI com `OPENAI_TRANSCRIBE_BASE_URL` e `OPENAI_TRANSCRIBE_API_KEY`.",
+    )
+
+
 def init_session_state() -> None:
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("data_source_mode", "auto")
     st.session_state.setdefault("last_rag_chunks", [])
     st.session_state.setdefault("last_rag_question", "")
     st.session_state.setdefault("sleep_rep_phase", "idle")
+    st.session_state.setdefault("rotina_voice_hash", "")
+    st.session_state.setdefault("rotina_voice_input_key", 0)
 
 
 def _processing_status_sql_line(user_text: str, sql: str | None) -> str:
@@ -2072,6 +2548,105 @@ def _processing_status_rag_line(user_text: str) -> str:
     return "PDF — documentos institucionais…"
 
 
+def _rotina_chat_footer_css() -> None:
+    """Espaço no fundo do conteúdo + estilo da barra fixa (microfone + chat)."""
+    st.markdown(
+        """
+<style>
+section.main div.block-container {
+    padding-bottom: 5.85rem !important;
+}
+/*
+ * Barra fixa: bases alinhadas — fundo do áudio com o fundo do campo de texto (flex-end).
+ * Evitamos mexer em largura/flex das colunas para não quebrar o WaveSurfer.
+ */
+.rotina-chat-footer-row {
+    position: fixed !important;
+    bottom: 0 !important;
+    z-index: 1002 !important;
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: flex-end !important;
+    gap: 0.5rem !important;
+    background: var(
+        --secondary-background-color,
+        var(--widget-background-color, var(--background-color))
+    ) !important;
+    border: none !important;
+    padding: 0.35rem 1rem 0.55rem 1rem !important;
+    padding-bottom: calc(0.55rem + env(safe-area-inset-bottom, 0px)) !important;
+    /* Sombra só para baixo — evita “linha” acima do rodapé (antes: offset Y negativo). */
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.09) !important;
+    margin: 0 !important;
+    box-sizing: border-box !important;
+    left: 0;
+    width: 100%;
+    overflow: visible !important;
+}
+/* Separador visual do expander "Gerar Relatório" (só área principal; sidebar não é section.main). */
+section.main div[data-testid="stExpander"] {
+    border: none !important;
+    box-shadow: none !important;
+    background: transparent !important;
+}
+section.main div[data-testid="stExpander"] details {
+    border: none !important;
+    box-shadow: none !important;
+}
+section.main div[data-testid="stExpander"] summary {
+    border-bottom: none !important;
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _rotina_pin_chat_footer_row() -> None:
+    """Fixa a linha com st.chat_input no rodapé e alinha à largura da área principal."""
+    components.html(
+        """
+<script>
+(function () {
+  const doc = window.parent.document;
+  if (!doc) return;
+  function pin() {
+    let rows;
+    try {
+      rows = doc.querySelectorAll(
+        'div[data-testid="stHorizontalBlock"]:has([data-testid="stChatInput"])'
+      );
+    } catch (e) {
+      return;
+    }
+    if (!rows.length) return;
+    const row = rows[rows.length - 1];
+    row.classList.add("rotina-chat-footer-row");
+    const sb = doc.querySelector('[data-testid="stSidebar"]');
+    const w = sb ? Math.round(sb.getBoundingClientRect().width) : 0;
+    row.style.left = w + "px";
+    row.style.width = "calc(100% - " + w + "px)";
+  }
+  var pinTimer = null;
+  function debouncedPin() {
+    clearTimeout(pinTimer);
+    pinTimer = setTimeout(pin, 40);
+  }
+  pin();
+  [80, 200, 500, 1200, 2500].forEach(function (t) { setTimeout(pin, t); });
+  const sb = doc.querySelector('[data-testid="stSidebar"]');
+  if (sb && window.ResizeObserver) {
+    new ResizeObserver(debouncedPin).observe(sb);
+  }
+  window.parent.addEventListener("resize", debouncedPin);
+})();
+</script>
+        """,
+        height=1,
+        width=0,
+    )
+
+
 def _render_rag_sidebar_body(body: Any) -> None:
     """Preenche o painel RAG depois que `last_rag_chunks` foi atualizado (mesmo run do Streamlit)."""
     if body is None:
@@ -2107,6 +2682,7 @@ def _render_rag_sidebar_body(body: Any) -> None:
 def main() -> None:
     st.set_page_config(page_title="Rotina Viva", layout="wide", initial_sidebar_state="expanded")
     init_session_state()
+    _rotina_chat_footer_css()
 
     with st.sidebar:
         st.subheader("Fonte da resposta")
@@ -2137,6 +2713,12 @@ def main() -> None:
             st.session_state.messages = []
             st.session_state.last_rag_chunks = []
             st.session_state.last_rag_question = ""
+            st.session_state.pop("rotina_voice_preview_bytes", None)
+            st.session_state.rotina_voice_hash = ""
+            st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
+            st.session_state.rotina_voice_input_key = (
+                int(st.session_state.get("rotina_voice_input_key", 0)) + 1
+            )
             st.rerun()
 
         st.divider()
@@ -2168,7 +2750,7 @@ def main() -> None:
     _rep_phase = st.session_state.get("sleep_rep_phase", "idle")
     _exp_relatorio = _rep_phase != "idle"
     _logo_path = DATA_DIR / "logo_rotina_viva.png"
-    # Coluna central ~1/3 da largura (2× a faixa usada em [5,2,5]).
+    # Logo centrada (~1/3); relatório em largura total da área principal (como o chat).
     _lg_l, _lg_m, _lg_r = st.columns([1, 1, 1])
     with _lg_m:
         if _logo_path.is_file():
@@ -2178,122 +2760,192 @@ def main() -> None:
                 f"Logo não encontrada: `{_logo_path.name}`. "
                 "Coloque o arquivo em `ROTINA_DATA_DIR` (ex.: pasta `data/`)."
             )
-        # Mesma coluna da logo: menos espaço vertical do que uma segunda linha de colunas.
-        with st.expander(
-            "Gerar Relatório de Rotina",
-            expanded=_exp_relatorio,
-        ):
-            render_sleep_meal_report_section(conn)
+    with st.expander(
+        "Gerar Relatório de Rotina",
+        expanded=_exp_relatorio,
+    ):
+        render_sleep_meal_report_section(conn)
 
-    if prompt := st.chat_input("Pergunte sobre rotinas, alunos ou documentos da escola…"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    _ve = st.session_state.pop("rotina_voice_error", None)
+    if _ve:
+        st.warning(_ve)
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    if not st.session_state.messages or st.session_state.messages[-1]["role"] != "user":
-        _render_rag_sidebar_body(rag_sidebar_body)
-        return
+    _rotina_voice_spinner_slot = st.empty()
 
-    user_text = st.session_state.messages[-1]["content"]
-    mode_ds = st.session_state.data_source_mode
+    _msgs = st.session_state.messages
+    _last_is_user = bool(_msgs and _msgs[-1]["role"] == "user")
 
-    if conn is None:
-        err = "DuckDB indisponível. Verifique os CSVs em `ROTINA_DATA_DIR`."
-        with st.chat_message("assistant"):
-            st.error(err)
-        st.session_state.messages.append({"role": "assistant", "content": err})
-        _render_rag_sidebar_body(rag_sidebar_body)
-        return
-
-    if mode_ds in ("auto", "documents") and collection is None:
-        err = (
-            "ChromaDB não está disponível ou o índice falhou. "
-            "Para perguntas em documentos use a opção só PDFs após corrigir o ambiente, "
-            "ou escolha só DuckDB se a pergunta for sobre cadastro/diário."
-        )
-        with st.chat_message("assistant"):
-            st.error(err)
-        st.session_state.messages.append({"role": "assistant", "content": err})
-        _render_rag_sidebar_body(rag_sidebar_body)
-        return
-
-    history_for_model = st.session_state.messages[:-1]
-
-    with st.chat_message("assistant"):
-        plan_force: str | None = None
-        if mode_ds == "structured":
-            plan_force = "sql_only"
-        elif mode_ds == "documents":
-            plan_force = "rag_only"
-
-        progress_ui = st.empty()
-        with progress_ui.container():
-            with st.status("Processando sua pergunta…", expanded=True) as proc:
-                proc.write("Analisando a pergunta e planejando consultas…")
-                plan = normalize_plan(
-                    llm_plan_sources(
-                        user_text, force=plan_force, history=history_for_model
-                    ),
-                    user_text,
-                )
-                plan = apply_user_data_source_mode(plan, mode_ds)
-                fontes = plan.get("fontes") or ["rag"]
-                if isinstance(fontes, str):
-                    fontes = [fontes]
-
-                duck_block = "(nenhuma consulta SQL executada)"
-                if "sql" in fontes:
-                    sql = plan.get("sql")
-                    if isinstance(sql, str) and sql.strip():
-                        proc.write(_processing_status_sql_line(user_text, sql))
-                        duck_block, ok = run_safe_select(conn, sql)
-                        if not ok:
-                            duck_block = (
-                                f"{duck_block}\n"
-                                "(Tente reformular com nome do aluno ou data, se aplicável.)"
-                            )
-                    else:
-                        proc.write("CSV — preparando consulta nas tabelas…")
-                        duck_block = (
-                            "Nenhuma consulta SQL válida foi gerada para esta pergunta."
-                        )
-
-                rag_block = "(busca em documentos não solicitada)"
-                if "rag" in fontes and collection is not None:
-                    proc.write(_processing_status_rag_line(user_text))
-                    rag_block, _rag_chunks = retrieve_rag_context_and_chunks(
-                        collection, user_text, k=RAG_TOP_K
-                    )
-                    st.session_state.last_rag_chunks = _rag_chunks
-                    st.session_state.last_rag_question = user_text
-                else:
-                    st.session_state.last_rag_chunks = []
-                    st.session_state.last_rag_question = ""
-                    if "rag" in fontes:
-                        proc.write("PDF — indisponível no momento (índice ou ambiente).")
-
-                if (
-                    _use_openai_compatible_chat()
-                    and ROTINA_API_PLAN_TO_CHAT_DELAY_SEC > 0
-                ):
-                    time.sleep(ROTINA_API_PLAN_TO_CHAT_DELAY_SEC)
-
-        def _gen() -> Generator[str, None, None]:
-            yield from llm_chat_stream(
-                user_text, duck_block, rag_block, history_for_model
+    # Rodapé ANTES do assistente: senão o chat_input só é criado no fim do script e some durante o stream.
+    # Texto à esquerda (maior), microfone à direita — alinhamento vertical continua no CSS (flex-end).
+    _icol, _vcol = st.columns([8, 1], gap="small")
+    _voice_blob = None
+    with _icol:
+        prompt = st.chat_input("Pergunte sobre rotinas, alunos ou documentos da escola…")
+    with _vcol:
+        _voice_preview = st.session_state.get("rotina_voice_preview_bytes")
+        if _voice_preview is not None:
+            # Após transcrever, o st.audio_input costuma entrar em erro no rerun; mantemos o áudio em sessão.
+            st.audio(_voice_preview, format=_rotina_st_audio_format(_voice_preview))
+        elif hasattr(st, "audio_input"):
+            _vk = int(st.session_state.get("rotina_voice_input_key", 0))
+            _voice_blob = st.audio_input(
+                "🔊",
+                help=(
+                    "Grave a pergunta; ao concluir, o áudio vira texto. "
+                    "Se o som estiver fraco ou vazio na reprodução aqui, o Windows pode estar a usar "
+                    "outro microfone do que o Chrome/Edge: no ícone do cadeado ou da barra de endereço, "
+                    "abra as permissões do site e escolha o microfone certo (o mesmo do teste em Som)."
+                ),
+                key=f"rotina_chat_voice_{_vk}",
             )
+        else:
+            st.caption("Atualize o Streamlit (≥ 1.40) para gravar por voz.")
 
-        _streamed = st.write_stream(_gen()) or ""
-        full = (
-            _streamed
-            if isinstance(_streamed, str)
-            else "".join(str(x) for x in _streamed)
+    _rotina_pin_chat_footer_row()
+
+    if _voice_blob is not None:
+        _raw = _voice_blob.getvalue()
+        if _raw:
+            _vh = hashlib.sha256(_raw).hexdigest()
+            if st.session_state.get("rotina_voice_hash") != _vh:
+                _vname = getattr(_voice_blob, "name", None) or "gravacao.wav"
+                with _rotina_voice_spinner_slot.container():
+                    with st.spinner("Processando áudio…"):
+                        _vtxt, _ver = transcribe_voice_bytes(_raw, _vname)
+                st.session_state.rotina_voice_preview_bytes = _raw
+                st.session_state.rotina_voice_hash = _vh
+                if _vtxt:
+                    st.session_state.messages.append({"role": "user", "content": _vtxt})
+                    st.session_state.rotina_voice_unlock_mic_after_reply = True
+                else:
+                    st.session_state.rotina_voice_error = _ver or (
+                        "Não foi possível entender o áudio. Tente falar mais claro ou mais perto do microfone."
+                    )
+                st.rerun()
+
+    if prompt:
+        st.session_state.pop("rotina_voice_preview_bytes", None)
+        st.session_state.rotina_voice_hash = ""
+        st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
+        st.session_state.rotina_voice_input_key = (
+            int(st.session_state.get("rotina_voice_input_key", 0)) + 1
         )
-        progress_ui.empty()
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.rerun()
 
-    st.session_state.messages.append({"role": "assistant", "content": full})
+    if _last_is_user:
+        user_text = _msgs[-1]["content"]
+        mode_ds = st.session_state.data_source_mode
+
+        if conn is None:
+            err = "DuckDB indisponível. Verifique os CSVs em `ROTINA_DATA_DIR`."
+            with st.chat_message("assistant"):
+                st.error(err)
+            st.session_state.messages.append({"role": "assistant", "content": err})
+        elif mode_ds in ("auto", "documents") and collection is None:
+            err = (
+                "ChromaDB não está disponível ou o índice falhou. "
+                "Para perguntas em documentos use a opção só PDFs após corrigir o ambiente, "
+                "ou escolha só DuckDB se a pergunta for sobre cadastro/diário."
+            )
+            with st.chat_message("assistant"):
+                st.error(err)
+            st.session_state.messages.append({"role": "assistant", "content": err})
+        else:
+            history_for_model = _msgs[:-1]
+
+            with st.chat_message("assistant"):
+                plan_force: str | None = None
+                if mode_ds == "structured":
+                    plan_force = "sql_only"
+                elif mode_ds == "documents":
+                    plan_force = "rag_only"
+
+                progress_ui = st.empty()
+                with progress_ui.container():
+                    with st.status("Processando sua pergunta…", expanded=True) as proc:
+                        proc.write("Analisando a pergunta e planejando consultas…")
+                        plan = normalize_plan(
+                            llm_plan_sources(
+                                user_text, force=plan_force, history=history_for_model
+                            ),
+                            user_text,
+                        )
+                        plan = apply_user_data_source_mode(plan, mode_ds)
+                        fontes = plan.get("fontes") or ["rag"]
+                        if isinstance(fontes, str):
+                            fontes = [fontes]
+
+                        duck_block = "(nenhuma consulta SQL executada)"
+                        if "sql" in fontes:
+                            sql = plan.get("sql")
+                            if isinstance(sql, str) and sql.strip():
+                                proc.write(_processing_status_sql_line(user_text, sql))
+                                duck_block, ok = run_safe_select(conn, sql)
+                                if not ok:
+                                    duck_block = (
+                                        f"{duck_block}\n"
+                                        "(Tente reformular com nome do aluno ou data, se aplicável.)"
+                                    )
+                            else:
+                                proc.write("CSV — preparando consulta nas tabelas…")
+                                duck_block = (
+                                    "Nenhuma consulta SQL válida foi gerada para esta pergunta."
+                                )
+
+                        rag_block = "(busca em documentos não solicitada)"
+                        if "rag" in fontes and collection is not None:
+                            proc.write(_processing_status_rag_line(user_text))
+                            rag_block, _rag_chunks = retrieve_rag_context_and_chunks(
+                                collection, user_text, k=RAG_TOP_K
+                            )
+                            st.session_state.last_rag_chunks = _rag_chunks
+                            st.session_state.last_rag_question = user_text
+                        else:
+                            st.session_state.last_rag_chunks = []
+                            st.session_state.last_rag_question = ""
+                            if "rag" in fontes:
+                                proc.write(
+                                    "PDF — indisponível no momento (índice ou ambiente)."
+                                )
+
+                        if (
+                            _use_openai_compatible_chat()
+                            and ROTINA_API_PLAN_TO_CHAT_DELAY_SEC > 0
+                        ):
+                            time.sleep(ROTINA_API_PLAN_TO_CHAT_DELAY_SEC)
+
+                def _gen() -> Generator[str, None, None]:
+                    yield from llm_chat_stream(
+                        user_text, duck_block, rag_block, history_for_model
+                    )
+
+                _streamed = st.write_stream(_gen()) or ""
+                full = (
+                    _streamed
+                    if isinstance(_streamed, str)
+                    else "".join(str(x) for x in _streamed)
+                )
+                progress_ui.empty()
+
+            st.session_state.messages.append({"role": "assistant", "content": full})
+
+    if st.session_state.get("rotina_voice_unlock_mic_after_reply") and (
+        st.session_state.messages
+        and st.session_state.messages[-1]["role"] == "assistant"
+    ):
+        st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
+        st.session_state.pop("rotina_voice_preview_bytes", None)
+        st.session_state.rotina_voice_hash = ""
+        st.session_state.rotina_voice_input_key = (
+            int(st.session_state.get("rotina_voice_input_key", 0)) + 1
+        )
+        st.rerun()
+
     _render_rag_sidebar_body(rag_sidebar_body)
 
 

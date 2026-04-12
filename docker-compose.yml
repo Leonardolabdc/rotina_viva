@@ -1,8 +1,42 @@
-# Rotina Viva: Streamlit + DuckDB + ChromaDB.
-# LLM e embeddings vêm de API (OpenRouter / OpenAI) — configure .env (ROTINA_CHAT_PROVIDER, ROTINA_EMBED_PROVIDER, chaves).
-# Para Ollama local, rode o daemon na máquina e use ROTINA_*_PROVIDER=ollama (fora deste compose).
+# Rotina Viva: Streamlit + DuckDB + ChromaDB + Whisper (transcrição de voz no chat).
+# LLM/embeddings: API (OpenRouter / OpenAI) — .env (ROTINA_CHAT_PROVIDER, ROTINA_EMBED_PROVIDER, chaves).
+# O serviço `whisper` expõe API compatível com OpenAI em http://whisper:9000/v1
+# api_server patch: VAD "relaxed" evita transcrição vazia com voz baixa e, com VAD off, evita
+# alucinações em loop. Ver docker/whisper_api_server.py (WHISPER_VAD_FILTER, condition_on_previous).
 
 services:
+  whisper:
+    image: hwdsl2/whisper-server:latest
+    container_name: rotina-whisper
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: base
+      WHISPER_LANGUAGE: pt
+      WHISPER_PORT: "9000"
+      WHISPER_THREADS: "4"
+      WHISPER_VAD_FILTER: "relaxed"
+      # Se a 1.ª passagem (VAD) vier vazia, tenta outra vez sem VAD (com anti-repetição).
+      WHISPER_EMPTY_RETRY: "true"
+      # Mais baixo = menos segmentos classificados como "sem fala" (predefinição no patch: 0.42).
+      WHISPER_NO_SPEECH_THRESHOLD: "0.42"
+    volumes:
+      - whisper-models:/var/lib/whisper
+      - ./docker/whisper_api_server.py:/opt/src/api_server.py:ro
+    ports:
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/docs', timeout=3)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 240s
+
   rotina-viva:
     build: .
     container_name: rotina-viva
@@ -13,6 +47,13 @@ services:
     environment:
       ROTINA_DATA_DIR: /data
       CHROMA_PERSIST_DIR: /data/chroma
+      OPENAI_TRANSCRIBE_BASE_URL: http://whisper:9000/v1
+      OPENAI_TRANSCRIBE_MODEL: whisper-1
     volumes:
       - ./data:/data
     restart: unless-stopped
+    depends_on:
+      - whisper
+
+volumes:
+  whisper-models:
