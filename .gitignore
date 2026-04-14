@@ -33,6 +33,7 @@ build/
 *.db.wal
 chroma_db/
 data/chroma/
+data/.rotina_chat/
 storage/
 
 # Dados e PDFs (Opcional: ignore se não quiser subir os arquivos de exemplo)

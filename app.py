@@ -12,6 +12,7 @@ import os
 import random
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Generator, Iterable
 
@@ -1541,7 +1542,9 @@ def sleep_meal_report_summary_md(
     return "\n\n".join(parts)
 
 
-def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> None:
+def render_sleep_meal_report_section(
+    conn: duckdb.DuckDBPyConnection | None, chat_session_id: str
+) -> None:
     """
     Conteúdo do relatório (chamado dentro do expander centralizado abaixo do título).
     Fluxo: Gerar relatório → nome do aluno → gráfico e resumo (só CSV / DuckDB).
@@ -1557,6 +1560,7 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
             help="Tendência de sono e padrões de alimentação com base nos registros da escola.",
         ):
             st.session_state.sleep_rep_phase = "ask_name"
+            persist_rotina_chat_to_disk(chat_session_id)
             st.rerun()
         return
 
@@ -1581,6 +1585,7 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
 
         if cancel:
             st.session_state.sleep_rep_phase = "idle"
+            persist_rotina_chat_to_disk(chat_session_id)
             st.rerun()
 
         if sub:
@@ -1600,6 +1605,7 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
                     st.session_state.sleep_rep_query_name = q
                     st.session_state.sleep_rep_resolved_label = resolved
                     st.session_state.sleep_rep_phase = "result"
+                    persist_rotina_chat_to_disk(chat_session_id)
                     st.rerun()
         return
 
@@ -1613,6 +1619,7 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
         st.info("Não foi possível carregar os dados da rotina. Tente novamente mais tarde.")
         if st.button("Fechar", key="sleep_rep_close_na"):
             st.session_state.sleep_rep_phase = "idle"
+            persist_rotina_chat_to_disk(chat_session_id)
             st.rerun()
         return
 
@@ -1626,6 +1633,7 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
         st.warning(err or "Sem dados.")
         if st.button("Fechar", key="sleep_rep_close_err"):
             st.session_state.sleep_rep_phase = "idle"
+            persist_rotina_chat_to_disk(chat_session_id)
             st.rerun()
         return
 
@@ -1693,10 +1701,12 @@ def render_sleep_meal_report_section(conn: duckdb.DuckDBPyConnection | None) -> 
             help="Volta ao formulário para informar outro aluno.",
         ):
             st.session_state.sleep_rep_phase = "ask_name"
+            persist_rotina_chat_to_disk(chat_session_id)
             st.rerun()
     with _br_close:
         if st.button("Fechar", key="sleep_rep_close_ok", use_container_width=True):
             st.session_state.sleep_rep_phase = "idle"
+            persist_rotina_chat_to_disk(chat_session_id)
             st.rerun()
 
 
@@ -2498,6 +2508,160 @@ def transcribe_voice_bytes(audio_bytes: bytes, filename: str) -> tuple[str | Non
     )
 
 
+ROTINA_CHAT_QUERY_PARAM = "rotina_chat"
+ROTINA_CHAT_SESSION_SUBDIR = ".rotina_chat"
+
+
+def _query_param_first(v: Any) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, list):
+        return str(v[0]) if v else None
+    return str(v)
+
+
+def _is_safe_chat_session_id(s: str) -> bool:
+    try:
+        uuid.UUID(s)
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _chat_session_dir() -> Path:
+    d = DATA_DIR / ROTINA_CHAT_SESSION_SUBDIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _coerce_stored_chat_messages_list(data: list[Any]) -> list[dict[str, str]] | None:
+    out: list[dict[str, str]] = []
+    for m in data:
+        if not isinstance(m, dict):
+            return None
+        role, content = m.get("role"), m.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            return None
+        out.append({"role": str(role), "content": content})
+    return out
+
+
+ROTINA_REPORT_PHASES = frozenset({"idle", "ask_name", "result"})
+
+
+def _report_blob_for_disk() -> dict[str, Any] | None:
+    """Estado mínimo do relatório sono/refeições para restaurar após F5 (gráficos refeitos no DuckDB)."""
+    phase = st.session_state.get("sleep_rep_phase", "idle")
+    if phase not in ROTINA_REPORT_PHASES:
+        phase = "idle"
+    if phase == "idle":
+        return None
+    blob: dict[str, Any] = {
+        "phase": phase,
+        "query_name": str(st.session_state.get("sleep_rep_query_name") or ""),
+        "resolved_label": str(st.session_state.get("sleep_rep_resolved_label") or ""),
+    }
+    if phase == "ask_name":
+        blob["nome_field"] = str(st.session_state.get("sleep_rep_nome_field") or "")
+    return blob
+
+
+def _apply_report_blob_from_disk(blob: Any) -> None:
+    if not isinstance(blob, dict):
+        return
+    phase = blob.get("phase")
+    if phase not in ROTINA_REPORT_PHASES:
+        return
+    qn = str(blob.get("query_name") or "").strip()
+    if phase == "result" and not qn:
+        st.session_state.sleep_rep_phase = "idle"
+        return
+    if phase == "idle":
+        st.session_state.sleep_rep_phase = "idle"
+        return
+    st.session_state.sleep_rep_phase = phase
+    st.session_state.sleep_rep_query_name = str(blob.get("query_name") or "")
+    st.session_state.sleep_rep_resolved_label = str(blob.get("resolved_label") or "")
+    if phase == "ask_name" and "nome_field" in blob:
+        st.session_state.sleep_rep_nome_field = str(blob.get("nome_field") or "")
+
+
+def _parse_session_file_payload(data: Any) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
+    """Ficheiro legado: lista só de mensagens. Novo: `{\"messages\": [...], \"report\": {...}}`."""
+    if isinstance(data, list):
+        parsed = _coerce_stored_chat_messages_list(data)
+        return (parsed or [], None)
+    if isinstance(data, dict) and "messages" in data:
+        raw_m = data["messages"]
+        if not isinstance(raw_m, list):
+            return ([], None)
+        parsed = _coerce_stored_chat_messages_list(raw_m)
+        if parsed is None:
+            return ([], None)
+        rep = data.get("report")
+        if isinstance(rep, dict):
+            return (parsed, rep)
+        return (parsed, None)
+    return ([], None)
+
+
+def _rotina_session_serial_current() -> str:
+    payload = {
+        "messages": st.session_state.get("messages") or [],
+        "report": _report_blob_for_disk(),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def ensure_rotina_chat_session_id() -> str:
+    """Garante `?rotina_chat=<uuid>` na URL; o mesmo id reaparece após F5 e liga ao ficheiro em disco."""
+    raw = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
+    if raw and _is_safe_chat_session_id(raw):
+        return raw
+    st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
+    st.rerun()
+
+
+def sync_rotina_chat_from_disk(chat_id: str) -> None:
+    """Carrega mensagens e estado do relatório quando a sessão Streamlit é nova ou o id da URL mudou."""
+    if st.session_state.get("_chat_disk_synced_for") == chat_id:
+        return
+    path = _chat_session_dir() / f"{chat_id}.json"
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            msgs, rep = _parse_session_file_payload(data)
+            st.session_state.messages = msgs
+            if rep is not None:
+                _apply_report_blob_from_disk(rep)
+        except (OSError, json.JSONDecodeError):
+            pass
+    st.session_state._chat_disk_synced_for = chat_id
+    st.session_state._rotina_session_serial = _rotina_session_serial_current()
+
+
+def persist_rotina_chat_to_disk(chat_id: str) -> None:
+    """Grava conversa + relatório em `ROTINA_DATA_DIR/.rotina_chat/<uuid>.json`."""
+    msgs: list[dict[str, str]] = st.session_state.get("messages") or []
+    rep = _report_blob_for_disk()
+    payload = {"messages": msgs, "report": rep}
+    serial = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    if st.session_state.get("_rotina_session_serial") == serial:
+        return
+    st.session_state._rotina_session_serial = serial
+    path = _chat_session_dir() / f"{chat_id}.json"
+    if not msgs and rep is None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    try:
+        path.write_text(serial, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def init_session_state() -> None:
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("data_source_mode", "auto")
@@ -2682,6 +2846,8 @@ def _render_rag_sidebar_body(body: Any) -> None:
 def main() -> None:
     st.set_page_config(page_title="Rotina Viva", layout="wide", initial_sidebar_state="expanded")
     init_session_state()
+    _chat_id = ensure_rotina_chat_session_id()
+    sync_rotina_chat_from_disk(_chat_id)
     _rotina_chat_footer_css()
 
     with st.sidebar:
@@ -2709,13 +2875,31 @@ def main() -> None:
             "**DuckDB:** alunos, turmas, diário, refeições cadastradas, etc. "
             "**Documentos:** regimento, PPP, normas e textos dos PDFs."
         )
+        st.caption(
+            "Conversa e **relatório de rotina** (fase aberta / gráficos) ficam no mesmo ficheiro, "
+            "ligados ao endereço (`rotina_chat=…`) em "
+            f"`{ROTINA_CHAT_SESSION_SUBDIR}` dentro de `ROTINA_DATA_DIR` — use o mesmo URL após F5."
+        )
         if st.button("Limpar conversa"):
+            _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
+            if _old_cid and _is_safe_chat_session_id(_old_cid):
+                try:
+                    (_chat_session_dir() / f"{_old_cid}.json").unlink(missing_ok=True)
+                except OSError:
+                    pass
             st.session_state.messages = []
             st.session_state.last_rag_chunks = []
             st.session_state.last_rag_question = ""
             st.session_state.pop("rotina_voice_preview_bytes", None)
             st.session_state.rotina_voice_hash = ""
             st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
+            st.session_state.pop("_rotina_session_serial", None)
+            st.session_state.pop("_chat_disk_synced_for", None)
+            st.session_state.sleep_rep_phase = "idle"
+            st.session_state.sleep_rep_query_name = ""
+            st.session_state.sleep_rep_resolved_label = ""
+            st.session_state.sleep_rep_nome_field = ""
+            st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
             st.session_state.rotina_voice_input_key = (
                 int(st.session_state.get("rotina_voice_input_key", 0)) + 1
             )
@@ -2764,7 +2948,7 @@ def main() -> None:
         "Gerar Relatório de Rotina",
         expanded=_exp_relatorio,
     ):
-        render_sleep_meal_report_section(conn)
+        render_sleep_meal_report_section(conn, _chat_id)
 
     _ve = st.session_state.pop("rotina_voice_error", None)
     if _ve:
@@ -2821,6 +3005,7 @@ def main() -> None:
                 if _vtxt:
                     st.session_state.messages.append({"role": "user", "content": _vtxt})
                     st.session_state.rotina_voice_unlock_mic_after_reply = True
+                    persist_rotina_chat_to_disk(_chat_id)
                 else:
                     st.session_state.rotina_voice_error = _ver or (
                         "Não foi possível entender o áudio. Tente falar mais claro ou mais perto do microfone."
@@ -2835,6 +3020,7 @@ def main() -> None:
             int(st.session_state.get("rotina_voice_input_key", 0)) + 1
         )
         st.session_state.messages.append({"role": "user", "content": prompt})
+        persist_rotina_chat_to_disk(_chat_id)
         st.rerun()
 
     if _last_is_user:
@@ -2946,6 +3132,7 @@ def main() -> None:
         )
         st.rerun()
 
+    persist_rotina_chat_to_disk(_chat_id)
     _render_rag_sidebar_body(rag_sidebar_body)
 
 
