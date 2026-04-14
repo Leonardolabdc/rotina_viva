@@ -40,6 +40,16 @@ Este projeto foi estruturado seguindo os pilares do aprendizado baseado em desaf
 
 ---
 
+##   Arquitetura e Fluxo de Dados
+
+
+![Fluxo Macro do Rotina Viva](rotina_viva_fluxo_macro.png)
+
+Destaque Técnico:
+O Rotina Viva utiliza uma arquitetura baseada em perfis de acesso (RBAC - Role-Based Access Control). Educadores possuem privilégios de escrita (CRUD) via voz ou texto para alimentar o DuckDB, enquanto os pais possuem acesso restrito apenas para consulta e interação via RAG no ChromaDB. Toda comunicação é mediada por uma camada de segurança que inclui Guardrails e Anonimização de dados sensíveis (PII).
+
+---
+
 ##   System Prompt
 
 SYSTEM_PERSONA = """Você é o assistente "Rotina Viva", da escola infantil.
