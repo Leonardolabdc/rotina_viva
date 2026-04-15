@@ -1,9 +1,0 @@
-id_registro,id_aluno,data,cafe_manha,almoco,lanche_tarde,jantar_extra,trocas_banheiro,evacuacao,medicamentos,hora_sono_inicio,hora_sono_fim,qualidade_sono,atividade_dia,interacao_social,recado_professora
-1,1,2024-04-08,comeu bem,comeu bem,comeu bem,,0,,,12:00,13:00,Dormiu normal (padrão ~60 min),,,
-2,1,2024-04-09,comeu bem,comeu pouco,comeu bem,,0,,,12:00,12:50,Dormiu pouco,,,
-3,1,2024-04-10,comeu bem,comeu bem,comeu pouco,,0,,,12:00,13:10,Dormiu bastante,,,
-4,1,2024-04-11,comeu pouco,comeu bem,comeu bem,,0,,,12:00,13:00,Dormiu normal (padrão ~60 min),,,
-5,1,2024-04-12,comeu bem,comeu bem,comeu bem,,0,,,12:00,12:45,Acordou agitado,,,
-6,1,2024-04-13,comeu bem,comeu bem,comeu bem,,0,,,12:00,13:05,Dormiu bastante,,,
-7,1,2024-04-14,comeu bem,comeu bem,comeu bem,,0,,,12:00,12:58,Dormiu normal (padrão ~60 min),,,
-8,1,2024-04-15,comeu pouco,comeu bem,comeu bem,,0,,,12:10,13:05,Dormiu normal (padrão ~60 min),,,

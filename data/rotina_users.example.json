@@ -1,0 +1,18 @@
+{
+  "gestao.demo": {
+    "password": "demo123",
+    "role": "gestao",
+    "display_name": "Gestão (edição CSV)"
+  },
+  "professor.demo": {
+    "password": "demo123",
+    "role": "educador",
+    "display_name": "Prof. Demonstração (só leitura nos dados)"
+  },
+  "pai.demo": {
+    "password": "demo123",
+    "role": "familia",
+    "display_name": "Responsável (Rafael Souza)",
+    "id_aluno": 1
+  }
+}
