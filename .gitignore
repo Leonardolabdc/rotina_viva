@@ -34,6 +34,7 @@ build/
 chroma_db/
 data/chroma/
 data/.rotina_chat/
+data/rotina_users.json
 storage/
 
 # Dados e PDFs (Opcional: ignore se não quiser subir os arquivos de exemplo)
