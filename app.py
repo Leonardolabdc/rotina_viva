@@ -174,6 +174,8 @@ ROTINA_API_ADD_MAX_RETRIES = _env_int("ROTINA_API_ADD_MAX_RETRIES", 12)
 ROTINA_API_EMBED_MAX_RETRIES = _env_int("ROTINA_API_EMBED_MAX_RETRIES", 12)
 # Teto de duração do streaming do chat (evita “rodando eternamente”).
 ROTINA_STREAM_MAX_SECONDS = _env_float("ROTINA_STREAM_MAX_SECONDS", 600.0)
+# Teto de caracteres na resposta do assistente (0 = sem limite). Evita cópia infinita de tabelas.
+ROTINA_CHAT_MAX_OUTPUT_CHARS = _env_int("ROTINA_CHAT_MAX_OUTPUT_CHARS", 4500)
 # Temperatura do chat: mais baixa quando há linhas SQL (reduz invenção em tabelas).
 ROTINA_CHAT_TEMPERATURE = _env_float("ROTINA_CHAT_TEMPERATURE", 0.35)
 ROTINA_CHAT_TEMP_WITH_SQL = _env_float("ROTINA_CHAT_TEMP_WITH_SQL", 0.12)
@@ -292,7 +294,32 @@ SYSTEM_SQL_STRICT = """Dados tabulares (bloco "Dados tabulares" acima):
 - Para contar, listar ou comparar, use **apenas** o que está nas linhas mostradas (e o número da coluna "linha" se existir).
 - Se a pergunta pedir algo que a tabela não contém (coluna ausente), diga que o resultado atual não traz esse campo.
 - Se várias linhas tiverem o mesmo nome e turmas diferentes, isso vem do cadastro (homônimos ou duplicidade): cite `id_aluno` de cada linha e não assuma um único aluno sem explicar.
-- Esta tabela reflete a **pergunta atual**; não conclua pela omissão de nomes aqui que "não há dados" sobre alguém que o utilizador **não citou** nesta pergunta."""
+- Esta tabela reflete a **pergunta atual**; não conclua pela omissão de nomes aqui que "não há dados" sobre alguém que o utilizador **não citou** nesta pergunta.
+- **Resposta ao utilizador (obrigatório):** não transcreva a tabela inteira nem liste todos os alunos linha a linha — o utilizador já vê os dados na aplicação. Limite-se a **resumir** (ex.: total, ids relevantes, sim/não) em **poucas frases**; no máximo **3 exemplos** de linha se for indispensável."""
+
+SYSTEM_MUTATION_APPLIED = """Operação nos dados (instalação autorizada — perfil Gestão):
+- Nesta mesma resposta, o sistema **já executou** o pedido de INSERT/UPDATE/DELETE nos CSV locais quando a secção de verificação pós-mutação aparecer nos dados tabulares acima.
+- **Ordem temporal:** essa tabela é o estado **depois** da alteração nesta mensagem — **não** é uma fotografia de “antes” nem um relatório de duplicatas pré-existentes.
+- Se o utilizador pediu **incluir** um aluno (ou linha de diário) e a verificação mostra **uma** linha com nome/turma/dados pedidos, interprete como **sucesso do cadastro** (confirme id e dados). **Não** diga que “já existia” ou que “não é necessário acrescentar” só porque essa linha aparece — ela pode ser **precisamente** o registo que acabou de ser inserido.
+- Só fale em duplicata ou “já cadastrado” se o utilizador pediu **apenas** verificação sem inserir, ou se a verificação mostrar **duas ou mais** linhas inequivocamente conflituosas para o mesmo pedido (explique com ids).
+- **DELETE:** a amostra tabular mostra só **alguns** registos recentes (últimos ids). Depois de remover um aluno, o nome **não** deve aparecer — isso **confirma** a remoção, não significa “nunca existiu para apagar”. **Não** diga que “não há aluno com esse nome para apagar” só porque percorreu mentalmente a lista mostrada: essa lista é **parcial**. Confirme o DELETE em **uma frase** sem reescrever a tabela.
+- **Total de alunos:** se existir a linha `CONTAGEM_OFICIAL_ALUNOS=N` no contexto, use **só esse N** ao mencionar quantos alunos há no cadastro — **não** invente, não subtraia 1, nem conte linhas da tabela markdown.
+- **id_aluno após inserir:** se existir `CONFIRME_id_aluno=N`, use **exatamente esse N** ao citar o id do aluno recém-cadastrado — **não** diga N+1, N−1, nem um id “à frente”; ignore suposições e use só essa linha.
+- Responda de forma **curta**: **não** copie todas as linhas da verificação para a resposta (máx. 1–2 linhas ou só id/nome).
+- **Não** recuse o pedido nem envie à secretaria quando a operação já foi aplicada.
+- Se os dados tabulares mostrarem erro de SQL na verificação, explique esse erro."""
+
+SYSTEM_MUTATION_FAILED = """Falha ao gravar alteração nos CSV desta instalação (Rotina Viva):
+- Nos dados tabulares acima há uma secção **"A alteração aos dados NÃO foi gravada"** com o motivo real (permissão, ficheiro em uso, etc.).
+- Responda de forma **prática**: o utilizador deve **fechar** `info_alunos.csv` e/ou `diario_estruturado.csv` se estiverem abertos no **Excel** ou noutro editor (no Windows isto bloqueia a escrita), e voltar a pedir a alteração.
+- **Não** diga que não tem acesso a "sistemas de gestão" ou que só pode "fornecer informações" — nesta app a alteração é feita aqui; o problema é **técnico local** (não foi possível escrever no disco).
+- Seja breve e acertivo: uma frase sobre fechar o ficheiro + repetir o pedido."""
+
+SYSTEM_DUPLICATE_CADASTRO = """Duplicados no cadastro (info_alunos):
+- Se existir secção **"Aviso de duplicado"** nos dados tabulares, o servidor detetou **nome ou contacto** já presentes no CSV **antes de gravar**.
+- Regra desta instalação: em caso de duplicado, a mutação é **bloqueada** e nada é persistido no CSV.
+- Explique com clareza: ajuste os dados ou confirme outro identificador/contato para gravar.
+- Não omita o aviso; seja breve."""
 
 _ASKS_SCHOOL_NAME = re.compile(
     r"(qual\s+[ée]\s+o\s+nome\s+da\s+escola|nome\s+da\s+escola|como\s+se\s+chama\s+a\s+escola)",
@@ -414,6 +441,523 @@ def validate_sql(sql: str) -> bool:
         re.IGNORECASE,
     )
     return banned.search(low) is None
+
+
+_SQL_ALIAS_SKIP = frozenset(
+    {
+        "inner",
+        "left",
+        "right",
+        "full",
+        "cross",
+        "join",
+        "where",
+        "group",
+        "order",
+        "limit",
+        "as",
+        "on",
+        "using",
+    }
+)
+
+
+def apply_parent_sql_scope(sql: str, id_aluno: int) -> str:
+    """
+    Restringe consultas do perfil Família às linhas do filho (subconsultas em diario / info).
+    Preserva o filtro interno `WHERE id_aluno = …` do subselect (não duplica substituição).
+    """
+    aid = int(id_aluno)
+    sub_d = f"(SELECT * FROM diario_estruturado WHERE id_aluno = {aid})"
+    sub_i = f"(SELECT * FROM info_alunos WHERE id_aluno = {aid})"
+    out = sql.strip().rstrip(";")
+
+    def scope_table(s: str, table: str, subq: str, default_alias: str) -> str:
+        # FROM tabela WHERE … (exceto quando já é WHERE id_aluno = …)
+        s = re.sub(
+            rf"\bFROM\s+{table}\s+WHERE\b(?!\s+id_aluno\s*=)",
+            rf"FROM {subq} AS {default_alias} WHERE",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(
+            rf"\bJOIN\s+{table}\s+WHERE\b(?!\s+id_aluno\s*=)",
+            rf"JOIN {subq} AS {default_alias} WHERE",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(
+            rf"\bFROM\s+{table}\s+AS\s+(\w+)\b",
+            rf"FROM {subq} AS \1",
+            s,
+            flags=re.IGNORECASE,
+        )
+        s = re.sub(
+            rf"\bJOIN\s+{table}\s+AS\s+(\w+)\b",
+            rf"JOIN {subq} AS \1",
+            s,
+            flags=re.IGNORECASE,
+        )
+        # FROM tabela alias — alias não pode ser WHERE
+        def _repl_alias(m: re.Match[str]) -> str:
+            op, word = m.group(1), m.group(2)
+            if word.lower() in _SQL_ALIAS_SKIP:
+                return m.group(0)
+            return f"{op} {subq} AS {word}"
+
+        s = re.sub(
+            rf"\b(FROM|JOIN)\s+{table}\s+(?!WHERE\b)(\w+)\b",
+            _repl_alias,
+            s,
+            flags=re.IGNORECASE,
+        )
+        # FROM tabela antes de ORDER / GROUP / LIMIT / fim
+        s = re.sub(
+            rf"\bFROM\s+{table}\b(?=\s+(?:ORDER|GROUP|LIMIT|$))",
+            rf"FROM {subq} AS {default_alias}",
+            s,
+            flags=re.IGNORECASE,
+        )
+        return s
+
+    out = scope_table(out, "diario_estruturado", sub_d, "diario_estruturado")
+    out = scope_table(out, "info_alunos", sub_i, "info_alunos")
+    return out
+
+
+def augment_question_for_parent_rag(question: str, id_aluno: int, nome_aluno: str) -> str:
+    """Reforça o embedding com o aluno vinculado (PDFs continuam institucionais)."""
+    q = (question or "").strip()
+    nome = (nome_aluno or "").strip() or f"id_aluno={id_aluno}"
+    return (
+        f"{q}\n\n[Escopo responsável: trate dados de rotina/diário apenas no contexto do aluno "
+        f"{nome} (id_aluno={id_aluno}). Documentos gerais da escola podem ser citados quando forem normativos.]"
+    )
+
+
+def validate_mutation_sql(sql: str) -> bool:
+    """Permite uma instrução INSERT/UPDATE/DELETE nas tabelas CSV (perfil gestão)."""
+    if not sql or not isinstance(sql, str):
+        return False
+    t = sql.strip().rstrip(";")
+    if ";" in t:
+        return False
+    low = t.lower()
+    if not any(low.startswith(p) for p in ("insert", "update", "delete")):
+        return False
+    banned = re.compile(
+        r"\b(drop|alter|create|attach|detach|pragma|copy|call|truncate|replace|into\s+sqlite|from\s+sqlite)\b",
+        re.IGNORECASE,
+    )
+    if banned.search(low):
+        return False
+    if "diario_estruturado" not in low and "info_alunos" not in low:
+        return False
+    return True
+
+
+def _ensure_utf8_bom_csv(path: Path) -> None:
+    """Excel no Windows abre CSV sem BOM como ANSI — o BOM marca UTF-8 (acentos corretos)."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return
+    try:
+        path.write_bytes(b"\xef\xbb\xbf" + raw)
+    except OSError:
+        pass
+
+
+def persist_duckdb_tables_to_csv(conn: duckdb.DuckDBPyConnection, data_dir: Path) -> None:
+    """Grava tabelas em memória de volta aos CSVs (após mutação)."""
+    info_csv = _resolve_info_alunos_csv(data_dir)
+    diario_csv = data_dir / "diario_estruturado.csv"
+    ip = str(info_csv.resolve()).replace("\\", "/")
+    dp = str(diario_csv.resolve()).replace("\\", "/")
+    conn.execute(f"COPY (SELECT * FROM info_alunos) TO '{ip}' (HEADER, DELIMITER ',')")
+    conn.execute(f"COPY (SELECT * FROM diario_estruturado) TO '{dp}' (HEADER, DELIMITER ',')")
+    _ensure_utf8_bom_csv(info_csv)
+    _ensure_utf8_bom_csv(diario_csv)
+
+
+def _extract_first_values_tuple(sql: str) -> str | None:
+    """Conteúdo interno do primeiro VALUES (...) num INSERT (uma linha)."""
+    m = re.search(r"VALUES\s*\(", sql, re.IGNORECASE)
+    if not m:
+        return None
+    i = m.end()
+    depth = 1
+    while i < len(sql) and depth:
+        c = sql[i]
+        if c == "'":
+            i += 1
+            while i < len(sql):
+                if sql[i] == "'":
+                    if i + 1 < len(sql) and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[m.end() : i]
+        i += 1
+    return None
+
+
+def _split_sql_value_list(inner: str) -> list[str]:
+    """Divide valores de um VALUES (…) sem nested calls (caso típico do cadastro)."""
+    parts: list[str] = []
+    cur: list[str] = []
+    i = 0
+    in_q = False
+    depth = 0
+    while i < len(inner):
+        c = inner[i]
+        if in_q:
+            if c == "'":
+                if i + 1 < len(inner) and inner[i + 1] == "'":
+                    cur.append("''")
+                    i += 2
+                    continue
+                in_q = False
+                cur.append("'")
+                i += 1
+                continue
+            cur.append(c)
+            i += 1
+            continue
+        if c == "'":
+            in_q = True
+            cur.append(c)
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+            cur.append(c)
+            i += 1
+            continue
+        if c == ")":
+            if depth > 0:
+                depth -= 1
+            cur.append(c)
+            i += 1
+            continue
+        if c == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+            i += 1
+            continue
+        if c.isspace():
+            i += 1
+            continue
+        cur.append(c)
+        i += 1
+    if cur:
+        parts.append("".join(cur).strip())
+    return parts
+
+
+def _sql_unquote_string_token(raw: str) -> str | None:
+    s = raw.strip()
+    if len(s) >= 2 and s[0] == "'" and s[-1] == "'":
+        return s[1:-1].replace("''", "'")
+    return None
+
+
+def _parse_info_alunos_insert(sql: str) -> dict[str, str] | None:
+    if not re.search(r"INSERT\s+INTO\s+info_alunos\b", sql, re.IGNORECASE):
+        return None
+    inner = _extract_first_values_tuple(sql)
+    if not inner:
+        return None
+    parts = _split_sql_value_list(inner)
+    mcols = re.search(
+        r"INSERT\s+INTO\s+info_alunos\s*\(\s*([^)]+?)\s*\)\s*VALUES",
+        sql,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if mcols:
+        cols = [c.strip().lower() for c in mcols.group(1).split(",")]
+    else:
+        cols = ["id_aluno", "nome", "turma", "alergias", "contato_pais"]
+    out: dict[str, str] = {}
+    for i, col in enumerate(cols):
+        if i >= len(parts):
+            break
+        raw = parts[i].strip()
+        uq = _sql_unquote_string_token(raw)
+        out[col] = uq if uq is not None else raw
+    # Fallback robusto: quando o 1º valor é subconsulta complexa, garanta os 4 campos textuais.
+    # Padrão esperado em info_alunos: (id_expr, 'nome', 'turma', 'alergias', 'contato_pais')
+    if "nome" not in out or "contato_pais" not in out:
+        lits = re.findall(r"'((?:[^']|'')*)'", inner)
+        if len(lits) >= 4:
+            out["nome"] = lits[-4].replace("''", "'")
+            out["turma"] = lits[-3].replace("''", "'")
+            out["alergias"] = lits[-2].replace("''", "'")
+            out["contato_pais"] = lits[-1].replace("''", "'")
+    return out or None
+
+
+def _parse_info_alunos_update(sql: str) -> dict[str, str] | None:
+    if not re.search(r"UPDATE\s+info_alunos\b", sql, re.IGNORECASE):
+        return None
+    out: dict[str, str] = {}
+    for field in ("nome", "turma", "alergias", "contato_pais"):
+        pat = rf"\b{field}\s*=\s*('(?:[^']|'')*')"
+        m = re.search(pat, sql, re.IGNORECASE)
+        if m:
+            lit = m.group(1)
+            out[field] = lit[1:-1].replace("''", "'")
+    mw = re.search(r"WHERE\s+id_aluno\s*=\s*(\d+)", sql, re.IGNORECASE)
+    if mw:
+        out["_where_id_aluno"] = mw.group(1)
+    return out if out else None
+
+
+def _duplicate_info_alunos_warning_before_write(
+    conn: duckdb.DuckDBPyConnection,
+    fields: dict[str, str],
+    exclude_id_aluno: int | None,
+) -> str | None:
+    """
+    Verifica se nome ou contacto já existem no cadastro (antes de INSERT/UPDATE persistir).
+    """
+    lines: list[str] = []
+    nome = (fields.get("nome") or "").strip()
+    contato = (fields.get("contato_pais") or "").strip()
+    excl = exclude_id_aluno
+
+    if nome:
+        q = (
+            "SELECT id_aluno, nome, turma FROM info_alunos "
+            "WHERE TRIM(COALESCE(nome,'')) ILIKE TRIM(?)"
+        )
+        params: list[Any] = [nome]
+        if excl is not None:
+            q += " AND CAST(id_aluno AS INTEGER) != ?"
+            params.append(excl)
+        q += " LIMIT 8"
+        try:
+            rows = conn.execute(q, params).fetchall()
+        except Exception:
+            rows = []
+        if rows:
+            bits = [f"id_aluno={r[0]} ({r[1]} | {r[2]})" for r in rows]
+            lines.append(
+                f"Nome «{nome}» já consta no cadastro: " + "; ".join(bits)
+            )
+
+    trivial_ct = ("", "nenhum", "nenhuma", "-", "—", "na", "n/a")
+    if contato and contato.lower() not in trivial_ct:
+        q = (
+            "SELECT id_aluno, nome, contato_pais FROM info_alunos "
+            "WHERE TRIM(COALESCE(contato_pais,'')) ILIKE TRIM(?)"
+        )
+        params = [contato]
+        if excl is not None:
+            q += " AND CAST(id_aluno AS INTEGER) != ?"
+            params.append(excl)
+        q += " LIMIT 8"
+        try:
+            rows = conn.execute(q, params).fetchall()
+        except Exception:
+            rows = []
+        if rows:
+            bits = [f"id_aluno={r[0]} ({r[1]})" for r in rows]
+            lines.append(
+                f"Contacto «{contato}» já consta no cadastro: " + "; ".join(bits)
+            )
+
+    if not lines:
+        return None
+    return (
+        "**Atenção**: " + " ".join(lines) + " "
+        "A alteração foi bloqueada para evitar duplicidade; confirme com o utilizador se era intencional."
+    )
+
+
+def _precheck_duplicate_info_alunos(
+    conn: duckdb.DuckDBPyConnection, sql: str
+) -> str | None:
+    low = sql.strip().lower()
+    if re.search(r"insert\s+into\s+info_alunos\b", low):
+        parsed = _parse_info_alunos_insert(sql)
+        if parsed:
+            return _duplicate_info_alunos_warning_before_write(conn, parsed, None)
+    if re.search(r"update\s+info_alunos\b", low):
+        parsed = _parse_info_alunos_update(sql)
+        if parsed:
+            wid = parsed.pop("_where_id_aluno", None)
+            excl = int(wid) if wid is not None else None
+            if parsed:
+                return _duplicate_info_alunos_warning_before_write(conn, parsed, excl)
+    return None
+
+
+def _format_mutation_persist_error(e: BaseException) -> str:
+    """Mensagem legível; destaca bloqueio por Excel/CSV aberto no Windows."""
+    raw = str(e)
+    el = raw.lower()
+    if isinstance(e, PermissionError) or "permission denied" in el or "errno 13" in el:
+        return (
+            "Não foi possível **gravar** os CSV: permissão negada ou ficheiro bloqueado. "
+            "Se `info_alunos.csv` ou `diario_estruturado.csv` estiver aberto no **Excel** (ou outro programa), "
+            "**feche o ficheiro** e tente novamente. "
+            f"(Detalhe técnico: {raw})"
+        )
+    if (
+        "being used by another process" in el
+        or "cannot access the file" in el
+        or "another program" in el
+    ):
+        return (
+            "Não foi possível gravar os CSV: o ficheiro está **em uso** por outro programa. "
+            "Feche o Excel ou o editor que tiver o CSV aberto e tente de novo. "
+            f"(Detalhe: {raw})"
+        )
+    return f"Erro ao aplicar alteração: {raw}"
+
+
+def run_mutation_and_persist(
+    conn: duckdb.DuckDBPyConnection, sql: str, data_dir: Path
+) -> tuple[str, bool, str | None]:
+    if not validate_mutation_sql(sql):
+        return "Instrução de alteração rejeitada (tabelas ou tipo não permitidos).", False, None
+    dup_warn: str | None = None
+    try:
+        dup_warn = _precheck_duplicate_info_alunos(conn, sql)
+    except Exception:
+        dup_warn = None
+    if dup_warn:
+        return (
+            "Alteração **não gravada**: o texto/nome/contacto informado já existe no cadastro.\n\n"
+            + dup_warn
+            + "\n\nNada foi alterado no CSV. Ajuste os dados e tente novamente.",
+            False,
+            dup_warn,
+        )
+    try:
+        conn.execute(sql)
+        persist_duckdb_tables_to_csv(conn, data_dir)
+        msg = "Alteração aplicada e CSVs atualizados."
+        return msg, True, None
+    except Exception as e:
+        return _format_mutation_persist_error(e), False, None
+
+
+def _verification_selects_after_mutation(mut_sql: str) -> list[str]:
+    """SELECTs só de leitura para o LLM ver o estado pós-mutação (evita resposta genérica de recusa)."""
+    low = (mut_sql or "").lower()
+    out: list[str] = []
+    if "info_alunos" in low:
+        # Amostra pequena: reduz tentação de o modelo copiar a lista inteira para a resposta.
+        # O total exato vem de `CONTAGEM_OFICIAL_ALUNOS` em `post_mutation_verification_block`, não da tabela formatada.
+        out.append(
+            "SELECT id_aluno, nome, turma, alergias, contato_pais FROM info_alunos ORDER BY id_aluno DESC LIMIT 12"
+        )
+    if "diario_estruturado" in low:
+        out.append(
+            "SELECT id_registro, id_aluno, data, cafe_manha, almoco, recado_professora "
+            "FROM diario_estruturado ORDER BY id_registro DESC LIMIT 12"
+        )
+    if not out:
+        out.append(
+            "SELECT 'info_alunos' AS tabela, COUNT(*)::BIGINT AS n FROM info_alunos "
+            "UNION ALL SELECT 'diario_estruturado', COUNT(*)::BIGINT FROM diario_estruturado"
+        )
+    return out
+
+
+def _official_new_aluno_id_block(conn: duckdb.DuckDBPyConnection) -> str | None:
+    """
+    Após INSERT em info_alunos (ids monótonos), o maior id_aluno é o registo criado.
+    Texto plano para o LLM não confundir com células da tabela markdown nem inventar id+1.
+    """
+    try:
+        r = conn.execute(
+            "SELECT id_aluno, nome, turma, alergias, contato_pais "
+            "FROM info_alunos ORDER BY id_aluno DESC LIMIT 1"
+        ).fetchone()
+        if not r:
+            return None
+        aid = int(r[0])
+        return (
+            "=== Aluno com maior id_aluno no cadastro (em INSERT recente, é o registo novo) ===\n"
+            f"CONFIRME_id_aluno={aid}\n"
+            f"nome={r[1]}\n"
+            f"turma={r[2]}\n"
+            f"alergias={r[3]}\n"
+            f"contato_pais={r[4]}\n"
+            "Ao confirmar o cadastro, repita **só** o inteiro em CONFIRME_id_aluno (não use id+1, id−1 nem outro número)."
+        )
+    except Exception:
+        return None
+
+
+def _official_info_alunos_count_block(conn: duckdb.DuckDBPyConnection) -> str | None:
+    """Uma linha inequívoca com COUNT(*) real (evita o modelo inventar ou ler mal tabelas markdown)."""
+    try:
+        r = conn.execute(
+            "SELECT COUNT(*) FROM info_alunos WHERE TRIM(COALESCE(nome, '')) <> ''"
+        ).fetchone()
+        if not r:
+            return None
+        n = int(r[0])
+        return (
+            "=== TOTAL NO CADASTRO (apenas alunos com nome preenchido) ===\n"
+            f"CONTAGEM_OFICIAL_ALUNOS={n}\n"
+            "Ao dizer quantos alunos existem, use **exatamente** o inteiro acima (não some linhas da amostra nem estime)."
+        )
+    except Exception:
+        return None
+
+
+def post_mutation_verification_block(
+    conn: duckdb.DuckDBPyConnection, mut_sql: str
+) -> str:
+    """Texto tabular para anexar ao contexto do chat após mutação bem-sucedida."""
+    mut_low = (mut_sql or "").lower()
+    note = (
+        "Estas linhas reflectem o cadastro/diário **depois** da mutação aplicada **nesta mensagem**. "
+        "Se o pedido foi inserir um registo, a linha com esses dados é em geral o **novo** registo, não prova de que já existia antes."
+    )
+    if "insert" in mut_low:
+        note += (
+            " (Pedido inclui INSERT: confirme o sucesso; para **id_aluno** use só a linha `CONFIRME_id_aluno=...` "
+            "se existir, não interprete como duplicata por defeito.)"
+        )
+    if "delete" in mut_low:
+        note += (
+            " **DELETE:** a lista abaixo é só uma **amostra** (últimos ids); após apagar, o nome pode **não** "
+            "aparecer — isso indica sucesso. Para o total de alunos use só **CONTAGEM_OFICIAL_ALUNOS** no fim; **não** reproduza a tabela na resposta."
+        )
+    parts: list[str] = [
+        "=== Verificação pós-mutação (estado atual dos CSV após esta operação) ===",
+        note,
+    ]
+    for sel in _verification_selects_after_mutation(mut_sql):
+        block, ok = run_safe_select(conn, sel)
+        parts.append(block)
+        if not ok:
+            break
+    if "insert" in mut_low and "info_alunos" in mut_low:
+        _nid = _official_new_aluno_id_block(conn)
+        if _nid:
+            parts.append(_nid)
+    if "info_alunos" in mut_low:
+        _cnt = _official_info_alunos_count_block(conn)
+        if _cnt:
+            parts.append(_cnt)
+    return "\n\n".join(parts)
 
 
 def _sql_cell_text(v: Any) -> str:
@@ -1543,15 +2087,33 @@ def sleep_meal_report_summary_md(
 
 
 def render_sleep_meal_report_section(
-    conn: duckdb.DuckDBPyConnection | None, chat_session_id: str
+    conn: duckdb.DuckDBPyConnection | None,
+    chat_session_id: str,
+    parent_lock: tuple[int, str] | None = None,
 ) -> None:
     """
     Conteúdo do relatório (chamado dentro do expander centralizado abaixo do título).
     Fluxo: Gerar relatório → nome do aluno → gráfico e resumo (só CSV / DuckDB).
+    Com parent_lock, o relatório fica restrito ao aluno vinculado (perfil Família).
     """
     phase = st.session_state.get("sleep_rep_phase", "idle")
 
     if phase == "idle":
+        if parent_lock:
+            aid, anome = parent_lock
+            if st.button(
+                f"Ver relatório de {anome}",
+                type="secondary",
+                use_container_width=True,
+                key="sleep_rep_open_parent_btn",
+                help="Sono e refeições — apenas os dados do seu filho neste cadastro.",
+            ):
+                st.session_state.sleep_rep_query_name = anome
+                st.session_state.sleep_rep_resolved_label = anome
+                st.session_state.sleep_rep_phase = "result"
+                persist_rotina_chat_to_disk(chat_session_id)
+                st.rerun()
+            return
         if st.button(
             "Gerar relatório",
             type="secondary",
@@ -1565,6 +2127,11 @@ def render_sleep_meal_report_section(
         return
 
     if phase == "ask_name":
+        if parent_lock:
+            st.session_state.sleep_rep_phase = "idle"
+            persist_rotina_chat_to_disk(chat_session_id)
+            st.rerun()
+            return
         st.caption(
             "Use o **nome completo** como consta no **cadastro da escola**. "
             "O relatório considera os **últimos sete dias corridos** a partir da data mais recente "
@@ -1694,7 +2261,7 @@ def render_sleep_meal_report_section(
     st.markdown(sleep_meal_report_summary_md(df, label, j_ini or None, j_fim or None))
     _br_new, _br_close = st.columns(2, gap="small")
     with _br_new:
-        if st.button(
+        if not parent_lock and st.button(
             "Gerar Novo Relatório",
             key="sleep_rep_new_report",
             use_container_width=True,
@@ -1939,6 +2506,11 @@ def normalize_plan(plan: dict[str, Any] | None, user_message: str) -> dict[str, 
     p["fontes"] = fontes
     if "sql" not in fontes:
         p["sql"] = None
+    mv = p.get("mutacao")
+    if mv is not None and not isinstance(mv, str):
+        p["mutacao"] = None
+    elif isinstance(mv, str) and not mv.strip():
+        p["mutacao"] = None
     return p
 
 
@@ -1973,6 +2545,7 @@ def _routing_planner_user_content(
     user_message: str,
     force: str | None = None,
     history: Iterable[dict[str, str]] | None = None,
+    extra_suffix: str = "",
 ) -> str:
     core = f"""Classifique a pergunta sobre uma escola infantil.
 
@@ -1992,6 +2565,8 @@ Responda somente JSON válido:
 
 Se "sql" estiver em fontes, "sql" deve ser a string SELECT. Se não souber a consulta, **não** inclua "sql" em fontes — use só "rag".
 """
+    if extra_suffix.strip():
+        core += "\n" + extra_suffix.strip() + "\n"
     if force == "sql_only":
         core += """
 MODO **somente dados estruturados** (o usuário escolheu consultar só o DuckDB / tabelas CSV):
@@ -2014,8 +2589,14 @@ def ollama_plan_sources(
     user_message: str,
     force: str | None = None,
     history: Iterable[dict[str, str]] | None = None,
+    extra_planner_suffix: str = "",
 ) -> dict[str, Any]:
-    planner = _routing_planner_user_content(user_message, force=force, history=history)
+    planner = _routing_planner_user_content(
+        user_message,
+        force=force,
+        history=history,
+        extra_suffix=extra_planner_suffix,
+    )
     payload = {
         "model": OLLAMA_CHAT_MODEL,
         "messages": [
@@ -2045,6 +2626,7 @@ def ollama_chat_stream(
     duck_block: str,
     rag_block: str,
     history: Iterable[dict[str, str]],
+    extra_system: str | None = None,
 ) -> Generator[str, None, None]:
     ctx = f"""## Dados tabulares (consultas internas)
 {duck_block}
@@ -2056,6 +2638,8 @@ def ollama_chat_stream(
         {"role": "system", "content": SYSTEM_PERSONA},
         {"role": "system", "content": SYSTEM_GROUNDING},
     ]
+    if extra_system and extra_system.strip():
+        messages.append({"role": "system", "content": extra_system.strip()})
     if duck_block_has_tabular_rows(duck_block):
         messages.append({"role": "system", "content": SYSTEM_SQL_STRICT})
     messages.append({"role": "system", "content": ctx})
@@ -2152,8 +2736,14 @@ def openai_plan_sources(
     user_message: str,
     force: str | None = None,
     history: Iterable[dict[str, str]] | None = None,
+    extra_planner_suffix: str = "",
 ) -> dict[str, Any]:
-    planner = _routing_planner_user_content(user_message, force=force, history=history)
+    planner = _routing_planner_user_content(
+        user_message,
+        force=force,
+        history=history,
+        extra_suffix=extra_planner_suffix,
+    )
     messages = [
         {"role": "system", "content": "Responda apenas com JSON válido, sem markdown."},
         {"role": "user", "content": planner},
@@ -2199,6 +2789,7 @@ def openai_chat_stream(
     duck_block: str,
     rag_block: str,
     history: Iterable[dict[str, str]],
+    extra_system: str | None = None,
 ) -> Generator[str, None, None]:
     ctx = f"""## Dados tabulares (consultas internas)
 {duck_block}
@@ -2210,6 +2801,8 @@ def openai_chat_stream(
         {"role": "system", "content": SYSTEM_PERSONA},
         {"role": "system", "content": SYSTEM_GROUNDING},
     ]
+    if extra_system and extra_system.strip():
+        messages.append({"role": "system", "content": extra_system.strip()})
     if duck_block_has_tabular_rows(duck_block):
         messages.append({"role": "system", "content": SYSTEM_SQL_STRICT})
     messages.append({"role": "system", "content": ctx})
@@ -2317,10 +2910,99 @@ def llm_plan_sources(
     user_message: str,
     force: str | None = None,
     history: Iterable[dict[str, str]] | None = None,
+    extra_planner_suffix: str = "",
 ) -> dict[str, Any]:
     if _use_openai_compatible_chat():
-        return openai_plan_sources(user_message, force=force, history=history)
-    return ollama_plan_sources(user_message, force=force, history=history)
+        return openai_plan_sources(
+            user_message,
+            force=force,
+            history=history,
+            extra_planner_suffix=extra_planner_suffix,
+        )
+    return ollama_plan_sources(
+        user_message,
+        force=force,
+        history=history,
+        extra_planner_suffix=extra_planner_suffix,
+    )
+
+
+def _cap_chat_stream(
+    gen: Generator[str, None, None], max_chars: int
+) -> Generator[str, None, None]:
+    """Corta o streaming quando excede o teto (evita cópia interminável de tabelas)."""
+    if max_chars <= 0:
+        yield from gen
+        return
+    n = 0
+    for piece in gen:
+        if not piece:
+            continue
+        remain = max_chars - n
+        if remain <= 0:
+            yield (
+                "\n\n_(Resposta truncada: limite `ROTINA_CHAT_MAX_OUTPUT_CHARS` no `.env`.)_"
+            )
+            break
+        if len(piece) <= remain:
+            yield piece
+            n += len(piece)
+        else:
+            yield piece[:remain]
+            yield (
+                "\n\n_(Resposta truncada: limite `ROTINA_CHAT_MAX_OUTPUT_CHARS` no `.env`.)_"
+            )
+            break
+
+
+def _first_re_group(pattern: str, text: str) -> str | None:
+    m = re.search(pattern, text, re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1)
+
+
+def build_mutation_direct_reply(
+    *,
+    mut_sql: str,
+    ok: bool,
+    result_message: str,
+    duplicate_warn: str,
+    duck_block: str,
+) -> str:
+    """
+    Resposta determinística para mutações (evita recusa contraditória do LLM).
+    """
+    if not ok:
+        if duplicate_warn:
+            return (
+                "Não gravei a alteração porque detectei dados duplicados no cadastro.\n\n"
+                f"{duplicate_warn}\n\n"
+                "Nada foi alterado no CSV."
+            )
+        return result_message.strip() or (
+            "A alteração não foi gravada. Feche o CSV se estiver aberto e tente novamente."
+        )
+
+    low = (mut_sql or "").lower()
+    count = _first_re_group(r"CONTAGEM_OFICIAL_ALUNOS\s*=\s*(\d+)", duck_block) or "?"
+    if "insert" in low and "info_alunos" in low:
+        aid = _first_re_group(r"CONFIRME_id_aluno\s*=\s*(\d+)", duck_block) or "?"
+        return (
+            f"Cadastro realizado com sucesso. O novo aluno foi gravado com `id_aluno={aid}`.\n\n"
+            f"Total atual de alunos no cadastro: {count}."
+        )
+    if "delete" in low and "info_alunos" in low:
+        return (
+            "Remoção realizada com sucesso no cadastro.\n\n"
+            f"Total atual de alunos no cadastro: {count}."
+        )
+    return (
+        "Alteração aplicada e CSV atualizado com sucesso.\n\n"
+        f"Total atual de alunos no cadastro: {count}."
+        if "info_alunos" in low
+        else "Alteração aplicada e CSV atualizado com sucesso."
+    )
 
 
 def apply_user_data_source_mode(plan: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -2336,6 +3018,7 @@ def apply_user_data_source_mode(plan: dict[str, Any], mode: str) -> dict[str, An
     elif mode == "documents":
         p["fontes"] = ["rag"]
         p["sql"] = None
+        p["mutacao"] = None
     return p
 
 
@@ -2344,9 +3027,19 @@ def llm_chat_stream(
     duck_block: str,
     rag_block: str,
     history: Iterable[dict[str, str]],
+    extra_system: str | None = None,
 ) -> Generator[str, None, None]:
     if _use_openai_compatible_chat():
-        yield from openai_chat_stream(user_message, duck_block, rag_block, history)
+        yield from _cap_chat_stream(
+            openai_chat_stream(
+                user_message,
+                duck_block,
+                rag_block,
+                history,
+                extra_system=extra_system,
+            ),
+            ROTINA_CHAT_MAX_OUTPUT_CHARS,
+        )
         return
     if ROTINA_CHAT_PROVIDER in ("openai", "openrouter") and not OPENAI_API_KEY:
         yield (
@@ -2354,7 +3047,16 @@ def llm_chat_stream(
             "`OPENAI_BASE_URL` e `OPENAI_CHAT_MODEL` (para OpenRouter, veja `.env`)."
         )
         return
-    yield from ollama_chat_stream(user_message, duck_block, rag_block, history)
+    yield from _cap_chat_stream(
+        ollama_chat_stream(
+            user_message,
+            duck_block,
+            rag_block,
+            history,
+            extra_system=extra_system,
+        ),
+        ROTINA_CHAT_MAX_OUTPUT_CHARS,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2670,6 +3372,10 @@ def init_session_state() -> None:
     st.session_state.setdefault("sleep_rep_phase", "idle")
     st.session_state.setdefault("rotina_voice_hash", "")
     st.session_state.setdefault("rotina_voice_input_key", 0)
+    st.session_state.setdefault("rotina_authenticated", False)
+    st.session_state.setdefault("rotina_role", None)
+    st.session_state.setdefault("rotina_user_label", "")
+    st.session_state.setdefault("rotina_parent_id_aluno", None)
 
 
 def _processing_status_sql_line(user_text: str, sql: str | None) -> str:
@@ -2843,98 +3549,210 @@ def _render_rag_sidebar_body(body: Any) -> None:
                 st.text(txt)
 
 
-def main() -> None:
-    st.set_page_config(page_title="Rotina Viva", layout="wide", initial_sidebar_state="expanded")
-    init_session_state()
-    _chat_id = ensure_rotina_chat_session_id()
-    sync_rotina_chat_from_disk(_chat_id)
-    _rotina_chat_footer_css()
+ROTINA_USERS_FILENAME = "rotina_users.json"
 
-    with st.sidebar:
-        st.subheader("Fonte da resposta")
-        _mode_choices: tuple[tuple[str, str], ...] = (
-            ("auto", "Automático (a IA escolhe SQL e/ou documentos)"),
-            ("structured", "Só dados estruturados (DuckDB — cadastro e diário)"),
-            ("documents", "Só documentos (ChromaDB — PDFs indexados)"),
-        )
-        _vals = [m[0] for m in _mode_choices]
-        _labels = {m[0]: m[1] for m in _mode_choices}
-        cur = st.session_state.data_source_mode
-        if cur not in _vals:
-            cur = "auto"
-            st.session_state.data_source_mode = cur
-        sel = st.radio(
-            "O que usar nesta sessão",
-            options=_vals,
-            index=_vals.index(cur),
-            format_func=lambda v: _labels[str(v)],
-        )
-        st.session_state.data_source_mode = str(sel)
-        st.caption(
-            "**Automático:** combina tabelas CSV e PDFs quando fizer sentido. "
-            "**DuckDB:** alunos, turmas, diário, refeições cadastradas, etc. "
-            "**Documentos:** regimento, PPP, normas e textos dos PDFs."
-        )
-        st.caption(
-            "Conversa e **relatório de rotina** (fase aberta / gráficos) ficam no mesmo ficheiro, "
-            "ligados ao endereço (`rotina_chat=…`) em "
-            f"`{ROTINA_CHAT_SESSION_SUBDIR}` dentro de `ROTINA_DATA_DIR` — use o mesmo URL após F5."
-        )
-        if st.button("Limpar conversa"):
-            _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
-            if _old_cid and _is_safe_chat_session_id(_old_cid):
-                try:
-                    (_chat_session_dir() / f"{_old_cid}.json").unlink(missing_ok=True)
-                except OSError:
-                    pass
-            st.session_state.messages = []
-            st.session_state.last_rag_chunks = []
-            st.session_state.last_rag_question = ""
-            st.session_state.pop("rotina_voice_preview_bytes", None)
-            st.session_state.rotina_voice_hash = ""
-            st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
-            st.session_state.pop("_rotina_session_serial", None)
-            st.session_state.pop("_chat_disk_synced_for", None)
-            st.session_state.sleep_rep_phase = "idle"
-            st.session_state.sleep_rep_query_name = ""
-            st.session_state.sleep_rep_resolved_label = ""
-            st.session_state.sleep_rep_nome_field = ""
-            st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
-            st.session_state.rotina_voice_input_key = (
-                int(st.session_state.get("rotina_voice_input_key", 0)) + 1
-            )
-            st.rerun()
 
-        st.divider()
-        st.markdown("**Trechos (RAG)**")
-        rag_sidebar_body = st.empty()
-
+def load_rotina_users() -> dict[str, Any]:
+    p = DATA_DIR / ROTINA_USERS_FILENAME
+    if not p.is_file():
+        return {}
     try:
-        conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
-    except Exception as e:
-        st.error(f"Falha ao carregar DuckDB: {e}")
-        conn = None
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
 
-    collection = None
-    _need_chroma = st.session_state.data_source_mode in ("auto", "documents")
-    if conn is not None and _need_chroma:
-        try:
-            collection = get_chroma_collection(
-                str(CHROMA_DIR),
-                str(DATA_DIR),
-                INDEX_PROFILE,
-            )
-            if collection.count() == 0:
-                st.warning(
-                    "Índice Chroma vazio: adicione os PDFs em `ROTINA_DATA_DIR` e reinicie para indexar."
-                )
-        except Exception as e:
-            st.error(f"Falha ao preparar ChromaDB/embeddings: {e}")
 
+def _planner_suffix_gestao() -> str:
+    return (
+        'Inclua no JSON o campo opcional "mutacao": null ou UMA string SQL com INSERT, UPDATE ou DELETE '
+        "apenas nas tabelas `info_alunos` e `diario_estruturado` (colunas do esquema acima). "
+        'Use "mutacao" só se o utilizador pedir para criar, alterar ou apagar registos; caso contrário "mutacao": null. '
+        "**Novos alunos (`INSERT` em `info_alunos`):** defina `id_aluno` como o próximo id livre — "
+        "use `(SELECT COALESCE(MAX(id_aluno), 0) + 1 FROM info_alunos)` como primeiro valor em `VALUES` "
+        "(não invente um número fixo nem reutilize ids existentes). "
+        "**Novas linhas de diário (`INSERT` em `diario_estruturado`):** id_registro com "
+        "`(SELECT COALESCE(MAX(id_registro), 0) + 1 FROM diario_estruturado)` da mesma forma. "
+        "Após mutação bem-sucedida o servidor corre SELECTs de verificação (estado **final** dos CSV); "
+        "na resposta, confirme o sucesso do pedido — não trate a linha inserida como duplicata pré-existente. "
+        "Antes de gravar, o servidor pode avisar se **nome** ou **contacto** já existiam noutra linha — repita esse aviso ao utilizador. "
+        'Pode omitir "sql" no JSON ou devolver só um SELECT complementar. '
+        'Formato: {"fontes": [...], "sql": null ou "SELECT ...", "mutacao": null ou "DELETE ..."}.'
+    )
+
+
+def _planner_suffix_educador_readonly() -> str:
+    return (
+        'RBAC — Perfil Educador (só leitura nos CSV): não inclua alterações. Use sempre `"mutacao": null`. '
+        "Apenas SELECT em `info_alunos` e `diario_estruturado`. "
+        'Formato: {"fontes": [...], "sql": null ou "SELECT ...", "mutacao": null}.'
+    )
+
+
+def _planner_suffix_familia(id_aluno: int, nome: str) -> str:
+    return (
+        f"RBAC — Perfil Família (só leitura): o responsável vê apenas o aluno **{nome}** (id_aluno={id_aluno}). "
+        'Não inclua "mutacao". Todas as consultas SQL devem restringir-se a esse aluno.'
+    )
+
+
+def _chat_system_familia(id_aluno: int, nome: str) -> str:
+    return (
+        f"O utilizador é um responsável (perfil leitura). Para dados de cadastro ou diário, aborde apenas o aluno "
+        f"**{nome}** (id_aluno={id_aluno}). Não revele dados de outras crianças."
+    )
+
+
+def render_login() -> None:
+    _pad_l, _center, _pad_r = st.columns([1, 2, 1])
+    with _center:
+        _il, _inner, _ir = st.columns([1, 2, 1])
+        with _inner:
+            _logo_path = DATA_DIR / "logo_rotina_viva.png"
+            if _logo_path.is_file():
+                st.image(str(_logo_path), use_container_width=True)
+            else:
+                st.title("Rotina Viva")
+            with st.form("rotina_login_form"):
+                username = st.text_input("Usuário")
+                password = st.text_input("Senha", type="password")
+                submitted = st.form_submit_button("Entrar", use_container_width=True)
+            if submitted:
+                users = load_rotina_users()
+                key = (username or "").strip()
+                rec = users.get(key) if isinstance(users, dict) else None
+                if isinstance(rec, dict) and rec.get("password") == password:
+                    role = str(rec.get("role", "")).strip().lower()
+                    if role not in ("gestao", "educador", "familia"):
+                        st.error(
+                            "Perfil inválido: use `gestao`, `educador` ou `familia` no ficheiro de utilizadores."
+                        )
+                        return
+                    st.session_state.rotina_authenticated = True
+                    st.session_state.rotina_role = role
+                    st.session_state.rotina_user_label = str(
+                        rec.get("display_name") or key
+                    ).strip()
+                    if role == "familia":
+                        try:
+                            st.session_state.rotina_parent_id_aluno = int(
+                                rec.get("id_aluno")
+                            )
+                        except (TypeError, ValueError):
+                            st.error(
+                                "Para o perfil Família é obrigatório um campo numérico `id_aluno`."
+                            )
+                            return
+                    else:
+                        st.session_state.rotina_parent_id_aluno = None
+                    st.session_state.messages = []
+                    st.session_state.pop("_rotina_session_serial", None)
+                    st.session_state.pop("_chat_disk_synced_for", None)
+                    st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos.")
+
+
+def render_auth_sidebar() -> None:
+    label = st.session_state.get("rotina_user_label") or "—"
+    role = st.session_state.get("rotina_role") or ""
+    st.markdown(f"**{label}**")
+    if role == "gestao":
+        st.caption("Perfil: Gestão")
+    elif role == "educador":
+        st.caption("Perfil: Educador (leitura)")
+    elif role == "familia":
+        st.caption("Perfil: Família")
+    if st.button("Sair", key="rotina_logout_btn"):
+        st.session_state.rotina_authenticated = False
+        st.session_state.rotina_role = None
+        st.session_state.rotina_user_label = ""
+        st.session_state.rotina_parent_id_aluno = None
+        st.session_state.messages = []
+        st.session_state.pop("_rotina_session_serial", None)
+        st.session_state.pop("_chat_disk_synced_for", None)
+        st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
+        st.rerun()
+    st.divider()
+
+
+def _render_chat_sidebar_internals() -> Any:
+    """Controlos de fonte + limpar conversa + placeholder dos trechos RAG."""
+    st.subheader("Fonte da resposta")
+    _mode_choices: tuple[tuple[str, str], ...] = (
+        ("auto", "Automático (a IA escolhe SQL e/ou documentos)"),
+        ("structured", "Só dados estruturados (DuckDB — cadastro e diário)"),
+        ("documents", "Só documentos (ChromaDB — PDFs indexados)"),
+    )
+    _vals = [m[0] for m in _mode_choices]
+    _labels = {m[0]: m[1] for m in _mode_choices}
+    cur = st.session_state.data_source_mode
+    if cur not in _vals:
+        cur = "auto"
+        st.session_state.data_source_mode = cur
+    sel = st.radio(
+        "O que usar nesta sessão",
+        options=_vals,
+        index=_vals.index(cur),
+        format_func=lambda v: _labels[str(v)],
+    )
+    st.session_state.data_source_mode = str(sel)
+    st.caption(
+        "**Automático:** combina tabelas CSV e PDFs quando fizer sentido. "
+        "**DuckDB:** alunos, turmas, diário, refeições cadastradas, etc. "
+        "**Documentos:** regimento, PPP, normas e textos dos PDFs."
+    )
+    st.caption(
+        "Conversa e **relatório de rotina** ficam no mesmo ficheiro, ligados a "
+        f"`{ROTINA_CHAT_SESSION_SUBDIR}` em `ROTINA_DATA_DIR`."
+    )
+    if st.button("Limpar conversa", key="rotina_clear_chat_btn"):
+        _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
+        if _old_cid and _is_safe_chat_session_id(_old_cid):
+            try:
+                (_chat_session_dir() / f"{_old_cid}.json").unlink(missing_ok=True)
+            except OSError:
+                pass
+        st.session_state.messages = []
+        st.session_state.last_rag_chunks = []
+        st.session_state.last_rag_question = ""
+        st.session_state.pop("rotina_voice_preview_bytes", None)
+        st.session_state.rotina_voice_hash = ""
+        st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
+        st.session_state.pop("_rotina_session_serial", None)
+        st.session_state.pop("_chat_disk_synced_for", None)
+        st.session_state.sleep_rep_phase = "idle"
+        st.session_state.sleep_rep_query_name = ""
+        st.session_state.sleep_rep_resolved_label = ""
+        st.session_state.sleep_rep_nome_field = ""
+        st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
+        st.session_state.rotina_voice_input_key = (
+            int(st.session_state.get("rotina_voice_input_key", 0)) + 1
+        )
+        st.rerun()
+
+    st.divider()
+    st.markdown("**Trechos (RAG)**")
+    return st.empty()
+
+
+def render_rotina_chat(
+    chat_id: str,
+    conn: duckdb.DuckDBPyConnection | None,
+    collection: Any,
+    rag_sidebar_body: Any,
+    *,
+    read_only_db: bool,
+    allow_mutations: bool,
+    parent_scope: tuple[int, str] | None,
+    planner_extra: str,
+    chat_extra_system: str | None,
+    report_parent_lock: tuple[int, str] | None,
+) -> None:
+    """Área principal: logo, relatório, chat (texto + áudio), processamento SQL/RAG/mutação."""
     _rep_phase = st.session_state.get("sleep_rep_phase", "idle")
     _exp_relatorio = _rep_phase != "idle"
     _logo_path = DATA_DIR / "logo_rotina_viva.png"
-    # Logo centrada (~1/3); relatório em largura total da área principal (como o chat).
     _lg_l, _lg_m, _lg_r = st.columns([1, 1, 1])
     with _lg_m:
         if _logo_path.is_file():
@@ -2948,7 +3766,9 @@ def main() -> None:
         "Gerar Relatório de Rotina",
         expanded=_exp_relatorio,
     ):
-        render_sleep_meal_report_section(conn, _chat_id)
+        render_sleep_meal_report_section(
+            conn, chat_id, parent_lock=report_parent_lock
+        )
 
     _ve = st.session_state.pop("rotina_voice_error", None)
     if _ve:
@@ -2963,8 +3783,6 @@ def main() -> None:
     _msgs = st.session_state.messages
     _last_is_user = bool(_msgs and _msgs[-1]["role"] == "user")
 
-    # Rodapé ANTES do assistente: senão o chat_input só é criado no fim do script e some durante o stream.
-    # Texto à esquerda (maior), microfone à direita — alinhamento vertical continua no CSS (flex-end).
     _icol, _vcol = st.columns([8, 1], gap="small")
     _voice_blob = None
     with _icol:
@@ -2972,7 +3790,6 @@ def main() -> None:
     with _vcol:
         _voice_preview = st.session_state.get("rotina_voice_preview_bytes")
         if _voice_preview is not None:
-            # Após transcrever, o st.audio_input costuma entrar em erro no rerun; mantemos o áudio em sessão.
             st.audio(_voice_preview, format=_rotina_st_audio_format(_voice_preview))
         elif hasattr(st, "audio_input"):
             _vk = int(st.session_state.get("rotina_voice_input_key", 0))
@@ -3005,7 +3822,7 @@ def main() -> None:
                 if _vtxt:
                     st.session_state.messages.append({"role": "user", "content": _vtxt})
                     st.session_state.rotina_voice_unlock_mic_after_reply = True
-                    persist_rotina_chat_to_disk(_chat_id)
+                    persist_rotina_chat_to_disk(chat_id)
                 else:
                     st.session_state.rotina_voice_error = _ver or (
                         "Não foi possível entender o áudio. Tente falar mais claro ou mais perto do microfone."
@@ -3020,7 +3837,7 @@ def main() -> None:
             int(st.session_state.get("rotina_voice_input_key", 0)) + 1
         )
         st.session_state.messages.append({"role": "user", "content": prompt})
-        persist_rotina_chat_to_disk(_chat_id)
+        persist_rotina_chat_to_disk(chat_id)
         st.rerun()
 
     if _last_is_user:
@@ -3057,21 +3874,64 @@ def main() -> None:
                         proc.write("Analisando a pergunta e planejando consultas…")
                         plan = normalize_plan(
                             llm_plan_sources(
-                                user_text, force=plan_force, history=history_for_model
+                                user_text,
+                                force=plan_force,
+                                history=history_for_model,
+                                extra_planner_suffix=planner_extra,
                             ),
                             user_text,
                         )
                         plan = apply_user_data_source_mode(plan, mode_ds)
+                        if read_only_db:
+                            plan["mutacao"] = None
                         fontes = plan.get("fontes") or ["rag"]
                         if isinstance(fontes, str):
                             fontes = [fontes]
+
+                        mutation_ok = False
+                        mut_sql_done = ""
+                        mutation_fail_detail = ""
+                        mutation_duplicate_warn = ""
+                        mutation_attempted = False
+                        mutation_result_msg = ""
+                        _conn = conn
+                        mut_sql = plan.get("mutacao") if allow_mutations else None
+                        if (
+                            isinstance(mut_sql, str)
+                            and mut_sql.strip()
+                            and _conn is not None
+                        ):
+                            mutation_attempted = True
+                            proc.write("Aplicando alteração nos dados (CSV)…")
+                            _mmsg, mok, _dup_w = run_mutation_and_persist(
+                                _conn, mut_sql.strip(), DATA_DIR
+                            )
+                            mutation_result_msg = _mmsg
+                            proc.write(_mmsg)
+                            if _dup_w:
+                                mutation_duplicate_warn = _dup_w
+                            if mok:
+                                mutation_ok = True
+                                mut_sql_done = mut_sql.strip()
+                                _conn = get_duckdb_connection(
+                                    str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR)
+                                )
+                            else:
+                                mutation_fail_detail = _mmsg
 
                         duck_block = "(nenhuma consulta SQL executada)"
                         if "sql" in fontes:
                             sql = plan.get("sql")
                             if isinstance(sql, str) and sql.strip():
-                                proc.write(_processing_status_sql_line(user_text, sql))
-                                duck_block, ok = run_safe_select(conn, sql)
+                                sql_use = sql.strip()
+                                if parent_scope is not None:
+                                    sql_use = apply_parent_sql_scope(
+                                        sql_use, parent_scope[0]
+                                    )
+                                proc.write(
+                                    _processing_status_sql_line(user_text, sql_use)
+                                )
+                                duck_block, ok = run_safe_select(_conn, sql_use)
                                 if not ok:
                                     duck_block = (
                                         f"{duck_block}\n"
@@ -3083,11 +3943,51 @@ def main() -> None:
                                     "Nenhuma consulta SQL válida foi gerada para esta pergunta."
                                 )
 
+                        if mutation_fail_detail:
+                            duck_block = (
+                                "=== A alteração aos dados NÃO foi gravada nos CSV ===\n"
+                                f"{mutation_fail_detail}\n\n"
+                                "Esta falha costuma ocorrer quando o ficheiro está aberto no Excel ou noutro editor. "
+                                "Feche o CSV, guarde se necessário, e volte a pedir a alteração no chat.\n\n"
+                                "---\n\n"
+                                + duck_block
+                            )
+
+                        if mutation_ok and mut_sql_done and _conn is not None:
+                            proc.write("Verificando estado após alteração nos CSV…")
+                            vblock = post_mutation_verification_block(
+                                _conn, mut_sql_done
+                            )
+                            if mutation_duplicate_warn:
+                                vblock = (
+                                    "=== Aviso de duplicado (nome ou contacto já existia no cadastro antes desta gravação) ===\n"
+                                    f"{mutation_duplicate_warn}\n\n"
+                                    "---\n\n"
+                                    + vblock
+                                )
+                            _db_placeholder = duck_block.strip().startswith(
+                                "(nenhuma"
+                            ) or "Nenhuma consulta SQL válida" in duck_block
+                            if _db_placeholder:
+                                duck_block = vblock
+                            else:
+                                duck_block = (
+                                    vblock
+                                    + "\n\n---\n\n=== Consulta adicional do plano ===\n\n"
+                                    + duck_block
+                                )
+
+                        rag_question = user_text
+                        if parent_scope is not None:
+                            rag_question = augment_question_for_parent_rag(
+                                user_text, parent_scope[0], parent_scope[1]
+                            )
+
                         rag_block = "(busca em documentos não solicitada)"
                         if "rag" in fontes and collection is not None:
                             proc.write(_processing_status_rag_line(user_text))
                             rag_block, _rag_chunks = retrieve_rag_context_and_chunks(
-                                collection, user_text, k=RAG_TOP_K
+                                collection, rag_question, k=RAG_TOP_K
                             )
                             st.session_state.last_rag_chunks = _rag_chunks
                             st.session_state.last_rag_question = user_text
@@ -3105,9 +4005,44 @@ def main() -> None:
                         ):
                             time.sleep(ROTINA_API_PLAN_TO_CHAT_DELAY_SEC)
 
+                _extra_chat = (chat_extra_system or "").strip()
+                if mutation_ok:
+                    _extra_chat = (
+                        (_extra_chat + "\n\n") if _extra_chat else ""
+                    ) + SYSTEM_MUTATION_APPLIED
+                    if mutation_duplicate_warn:
+                        _extra_chat += "\n\n" + SYSTEM_DUPLICATE_CADASTRO
+                elif mutation_fail_detail:
+                    _extra_chat = (
+                        (_extra_chat + "\n\n") if _extra_chat else ""
+                    ) + (
+                        SYSTEM_DUPLICATE_CADASTRO
+                        if mutation_duplicate_warn
+                        else SYSTEM_MUTATION_FAILED
+                    )
+
+                if mutation_attempted and isinstance(mut_sql, str) and mut_sql.strip():
+                    full = build_mutation_direct_reply(
+                        mut_sql=mut_sql.strip(),
+                        ok=mutation_ok,
+                        result_message=mutation_result_msg or mutation_fail_detail,
+                        duplicate_warn=mutation_duplicate_warn,
+                        duck_block=duck_block,
+                    )
+                    st.markdown(full)
+                    progress_ui.empty()
+                    st.session_state.messages.append({"role": "assistant", "content": full})
+                    persist_rotina_chat_to_disk(chat_id)
+                    _render_rag_sidebar_body(rag_sidebar_body)
+                    return
+
                 def _gen() -> Generator[str, None, None]:
                     yield from llm_chat_stream(
-                        user_text, duck_block, rag_block, history_for_model
+                        user_text,
+                        duck_block,
+                        rag_block,
+                        history_for_model,
+                        extra_system=_extra_chat or None,
                     )
 
                 _streamed = st.write_stream(_gen()) or ""
@@ -3132,8 +4067,176 @@ def main() -> None:
         )
         st.rerun()
 
-    persist_rotina_chat_to_disk(_chat_id)
+    persist_rotina_chat_to_disk(chat_id)
     _render_rag_sidebar_body(rag_sidebar_body)
+
+
+def _render_gestao_ou_educador(
+    *,
+    allow_mutations: bool,
+    read_only_db: bool,
+    planner_extra: str,
+) -> None:
+    _chat_id = ensure_rotina_chat_session_id()
+    sync_rotina_chat_from_disk(_chat_id)
+    _rotina_chat_footer_css()
+    with st.sidebar:
+        render_auth_sidebar()
+        rag_sidebar_body = _render_chat_sidebar_internals()
+
+    try:
+        conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
+    except Exception as e:
+        st.error(f"Falha ao carregar DuckDB: {e}")
+        conn = None
+
+    collection = None
+    _need_chroma = st.session_state.data_source_mode in ("auto", "documents")
+    if conn is not None and _need_chroma:
+        try:
+            collection = get_chroma_collection(
+                str(CHROMA_DIR),
+                str(DATA_DIR),
+                INDEX_PROFILE,
+            )
+            if collection.count() == 0:
+                st.warning(
+                    "Índice Chroma vazio: adicione os PDFs em `ROTINA_DATA_DIR` e reinicie para indexar."
+                )
+        except Exception as e:
+            st.error(f"Falha ao preparar ChromaDB/embeddings: {e}")
+
+    st.subheader("Alunos cadastrados")
+    if conn is not None:
+        try:
+            _df_alunos = conn.execute(
+                "SELECT id_aluno, nome, turma, alergias FROM info_alunos ORDER BY nome"
+            ).fetchdf()
+            st.dataframe(_df_alunos, use_container_width=True, hide_index=True)
+        except Exception as ex:
+            st.warning(str(ex))
+    else:
+        st.info("Sem ligação ao DuckDB — verifique os CSVs.")
+
+    st.divider()
+    render_rotina_chat(
+        _chat_id,
+        conn,
+        collection,
+        rag_sidebar_body,
+        read_only_db=read_only_db,
+        allow_mutations=allow_mutations,
+        parent_scope=None,
+        planner_extra=planner_extra,
+        chat_extra_system=None,
+        report_parent_lock=None,
+    )
+
+
+def render_gestao() -> None:
+    _render_gestao_ou_educador(
+        allow_mutations=True,
+        read_only_db=False,
+        planner_extra=_planner_suffix_gestao(),
+    )
+
+
+def render_educador() -> None:
+    _render_gestao_ou_educador(
+        allow_mutations=False,
+        read_only_db=True,
+        planner_extra=_planner_suffix_educador_readonly(),
+    )
+
+
+def render_familia() -> None:
+    _chat_id = ensure_rotina_chat_session_id()
+    sync_rotina_chat_from_disk(_chat_id)
+    _rotina_chat_footer_css()
+    with st.sidebar:
+        render_auth_sidebar()
+        rag_sidebar_body = _render_chat_sidebar_internals()
+
+    try:
+        conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
+    except Exception as e:
+        st.error(f"Falha ao carregar DuckDB: {e}")
+        conn = None
+
+    aid = st.session_state.get("rotina_parent_id_aluno")
+    nome_filho = "—"
+    if conn is not None and isinstance(aid, int):
+        try:
+            r = conn.execute(
+                "SELECT nome FROM info_alunos WHERE id_aluno = ? LIMIT 1",
+                [aid],
+            ).fetchone()
+            if r:
+                nome_filho = str(r[0])
+        except Exception:
+            pass
+
+    st.info(
+        f"Consulta restrita ao aluno **{nome_filho}** (id_aluno={aid}). "
+        "Não é possível alterar o cadastro ou o diário a partir deste perfil."
+    )
+    st.divider()
+
+    collection = None
+    _need_chroma = st.session_state.data_source_mode in ("auto", "documents")
+    if conn is not None and _need_chroma:
+        try:
+            collection = get_chroma_collection(
+                str(CHROMA_DIR),
+                str(DATA_DIR),
+                INDEX_PROFILE,
+            )
+            if collection.count() == 0:
+                st.warning(
+                    "Índice Chroma vazio: adicione os PDFs em `ROTINA_DATA_DIR` e reinicie para indexar."
+                )
+        except Exception as e:
+            st.error(f"Falha ao preparar ChromaDB/embeddings: {e}")
+
+    _ps: tuple[int, str] | None = None
+    if isinstance(aid, int):
+        _ps = (aid, nome_filho)
+
+    render_rotina_chat(
+        _chat_id,
+        conn,
+        collection,
+        rag_sidebar_body,
+        read_only_db=True,
+        allow_mutations=False,
+        parent_scope=_ps,
+        planner_extra=_planner_suffix_familia(aid, nome_filho)
+        if isinstance(aid, int)
+        else "",
+        chat_extra_system=_chat_system_familia(aid, nome_filho)
+        if isinstance(aid, int)
+        else None,
+        report_parent_lock=_ps,
+    )
+
+
+def main() -> None:
+    st.set_page_config(page_title="Rotina Viva", layout="wide", initial_sidebar_state="expanded")
+    init_session_state()
+    if not st.session_state.get("rotina_authenticated"):
+        render_login()
+        return
+    role = st.session_state.get("rotina_role")
+    if role == "gestao":
+        render_gestao()
+    elif role == "educador":
+        render_educador()
+    elif role == "familia":
+        render_familia()
+    else:
+        st.session_state.rotina_authenticated = False
+        st.error("Sessão inválida. Entre novamente.")
+        render_login()
 
 
 if __name__ == "__main__":
