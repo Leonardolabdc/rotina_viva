@@ -79,8 +79,7 @@ SYSTEM_SQL_STRICT = """Dados tabulares (bloco "Dados tabulares" acima):
 
 ##   Estrutura do Projeto
 
-* `data/`: Contém os arquivos de entrada (ex: `diario_estruturado.csv`).
-* `scripts/`: Scripts auxiliares de automação e limpeza de dados.
+* `data/`: Contém os arquivos de entrada (ex: `diario_estruturado.csv`, `info_aluno.csv`).
 * `Dockerfile` & `docker-compose.yml`: Configurações para ambiente isolado e replicável.
 * `app.py`: Script principal para processamento e análise.
 
@@ -95,7 +94,7 @@ SYSTEM_SQL_STRICT = """Dados tabulares (bloco "Dados tabulares" acima):
 ### Passo a Passo
 1.  **Clone o repositório:**
     ```bash
-    git clone [https://github.com/Leonardolabdc/Rotina-Viva.git](https://github.com/Leonardolabdc/Rotina-Viva.git)
+    git clone https://github.com/Leonardolabdc/Rotina-Viva.git
     cd Rotina-Viva
     ```
 2.  **Suba o ambiente com Docker:**
