@@ -3138,20 +3138,14 @@ def _transcribe_whisper_http(audio_bytes: bytes, filename: str) -> tuple[str | N
         except json.JSONDecodeError:
             raw = (r.text or "").strip()
             if not raw:
-                return None, "Whisper respondeu 200 mas o corpo estava vazio."
+                return None, "__EMPTY_TRANSCRIPT__"
             return raw, None
         if not isinstance(out, dict):
             return None, f"Whisper devolveu JSON inesperado: {type(out).__name__}"
         t = (out.get("text") or "").strip()
         if not t:
-            return None, (
-                "Whisper respondeu OK mas sem texto (~"
-                f"{len(audio_bytes)} bytes de áudio). Atualize e recrie os contentores "
-                "(`docker compose ... --force-recreate whisper` e `--build rotina-viva`). "
-                "Ouça a reprodução no widget: se não ouvir a sua voz, o navegador pode estar noutro microfone "
-                "(cadeado → permissões do site → microfone). "
-                "Se ouvir bem e mesmo assim vazio, em `docker-compose.yml` experimente `WHISPER_MODEL: small`."
-            )
+            # Código interno: UI trata com aviso curto no chat e reabre o microfone.
+            return None, "__EMPTY_TRANSCRIPT__"
         return t, None
     except httpx.ConnectError:
         return None, (
@@ -3198,6 +3192,8 @@ def transcribe_voice_bytes(audio_bytes: bytes, filename: str) -> tuple[str | Non
     gtxt = _transcribe_google_sr(audio_bytes)
     if gtxt:
         return gtxt, None
+    if werr == "__EMPTY_TRANSCRIPT__":
+        return None, "__EMPTY_TRANSCRIPT__"
     if werr:
         return None, werr
     return (
@@ -3212,6 +3208,9 @@ def transcribe_voice_bytes(audio_bytes: bytes, filename: str) -> tuple[str | Non
 
 ROTINA_CHAT_QUERY_PARAM = "rotina_chat"
 ROTINA_CHAT_SESSION_SUBDIR = ".rotina_chat"
+ROTINA_BROWSER_SESSION_QUERY_PARAM = "rotina_session"
+ROTINA_BROWSER_SESSION_SUBDIR = ".rotina_browser_sessions"
+ROTINA_DIRECT_CHAT_FILE = "chat_familia_educadores.json"
 
 
 def _query_param_first(v: Any) -> str | None:
@@ -3234,6 +3233,294 @@ def _chat_session_dir() -> Path:
     d = DATA_DIR / ROTINA_CHAT_SESSION_SUBDIR
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _browser_session_dir() -> Path:
+    d = DATA_DIR / ROTINA_BROWSER_SESSION_SUBDIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _issue_browser_session_token() -> str:
+    return str(uuid.uuid4())
+
+
+def _save_browser_session_token(token: str, username: str) -> None:
+    p = _browser_session_dir() / f"{token}.json"
+    try:
+        p.write_text(
+            json.dumps({"username": username.strip(), "v": 1}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def _delete_browser_session_file(token: str) -> None:
+    if not _is_safe_chat_session_id(token):
+        return
+    try:
+        (_browser_session_dir() / f"{token}.json").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def try_restore_rotina_browser_session() -> bool:
+    """
+    Após F5 o session_state do Streamlit reinicia; restaura login se a URL tiver
+    `?rotina_session=<uuid>` e existir o ficheiro em disco (token opaco).
+    """
+    if st.session_state.get("rotina_authenticated"):
+        return True
+    raw = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
+    if not raw or not _is_safe_chat_session_id(raw):
+        return False
+    path = _browser_session_dir() / f"{raw}.json"
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    username = str(data.get("username") or "").strip()
+    if not username:
+        return False
+    users = load_rotina_users()
+    rec = users.get(username) if isinstance(users, dict) else None
+    if not isinstance(rec, dict):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    role = str(rec.get("role", "")).strip().lower()
+    if role not in ("gestao", "educador", "familia"):
+        return False
+    st.session_state.rotina_authenticated = True
+    st.session_state.rotina_role = role
+    st.session_state.rotina_user_label = str(rec.get("display_name") or username).strip()
+    if role == "familia":
+        try:
+            st.session_state.rotina_parent_id_aluno = int(rec.get("id_aluno"))
+        except (TypeError, ValueError):
+            st.session_state.rotina_authenticated = False
+            return False
+    else:
+        st.session_state.rotina_parent_id_aluno = None
+    st.session_state.setdefault("rotina_sidebar_screen", "assistant")
+    st.session_state.setdefault("rotina_direct_chat_student", None)
+    return True
+
+
+def _clear_browser_session_query_param() -> None:
+    if ROTINA_BROWSER_SESSION_QUERY_PARAM not in st.query_params:
+        return
+    try:
+        del st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM]
+    except Exception:
+        pass
+
+
+def _direct_chat_path() -> Path:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return DATA_DIR / ROTINA_DIRECT_CHAT_FILE
+
+
+def _legacy_direct_chat_path() -> Path:
+    return (DATA_DIR / ".familia_educador_chat") / "mensagens.json"
+
+
+def _normalize_direct_chat_sender_role(raw: str) -> str | None:
+    """`familia` ↔ `educador` (gestão conta como lado escola)."""
+    r = (raw or "").strip().lower()
+    if r == "familia":
+        return "familia"
+    if r in ("educador", "gestao"):
+        return "educador"
+    return None
+
+
+def _direct_chat_viewer_side(session_role: str) -> str | None:
+    sr = (session_role or "").strip().lower()
+    if sr == "familia":
+        return "familia"
+    if sr in ("educador", "gestao"):
+        return "educador"
+    return None
+
+
+def _load_direct_chat_store() -> dict[str, list[dict[str, str]]]:
+    p = _direct_chat_path()
+    if not p.is_file():
+        lp = _legacy_direct_chat_path()
+        if lp.is_file():
+            p = lp
+    if not p.is_file():
+        return {}
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    clean: dict[str, list[dict[str, str]]] = {}
+    for key, msgs in raw.items():
+        if not isinstance(key, str) or not isinstance(msgs, list):
+            continue
+        parsed: list[dict[str, str]] = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            txt = str(m.get("content") or "").strip()
+            sender = str(m.get("sender") or "").strip()
+            role = _normalize_direct_chat_sender_role(str(m.get("sender_role") or ""))
+            if not txt or role is None:
+                continue
+            parsed.append({"content": txt, "sender": sender, "sender_role": role})
+        clean[key] = parsed[-300:]
+    return clean
+
+
+def _persist_direct_chat_store(store: dict[str, list[dict[str, str]]]) -> None:
+    try:
+        _direct_chat_path().write_text(
+            json.dumps(store, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
+def _ensure_direct_chat_store_file() -> None:
+    p = _direct_chat_path()
+    if p.is_file():
+        return
+    _persist_direct_chat_store({})
+
+
+def _student_label_for_chat(conn: duckdb.DuckDBPyConnection | None, aid: int) -> str:
+    if conn is None:
+        return f"id_aluno={aid}"
+    try:
+        rec = conn.execute(
+            "SELECT nome, turma FROM info_alunos WHERE id_aluno = ? LIMIT 1",
+            [aid],
+        ).fetchone()
+    except Exception:
+        rec = None
+    if not rec:
+        return f"id_aluno={aid}"
+    nome = str(rec[0] or "").strip() or f"id_aluno={aid}"
+    turma = str(rec[1] or "").strip()
+    return f"{nome} ({turma})" if turma else nome
+
+
+def render_direct_family_educator_chat(conn: duckdb.DuckDBPyConnection | None) -> None:
+    _ensure_direct_chat_store_file()
+    role_lc = str(st.session_state.get("rotina_role") or "").strip().lower()
+    user_label = str(st.session_state.get("rotina_user_label") or "Utilizador")
+    viewer_side = _direct_chat_viewer_side(role_lc)
+    thread_aid: int | None = None
+
+    st.subheader("Chat direto Família ↔ Educadores")
+    st.caption(f"Histórico salvo em `{_direct_chat_path().name}` dentro de `data`.")
+
+    if role_lc == "familia":
+        aid = st.session_state.get("rotina_parent_id_aluno")
+        if isinstance(aid, int):
+            thread_aid = aid
+            st.info(
+                f"Canal direto com educadores para o aluno `{_student_label_for_chat(conn, aid)}`."
+            )
+        else:
+            st.warning("Não foi possível identificar o aluno associado ao perfil Família.")
+            return
+    elif role_lc in ("educador", "gestao"):
+        if conn is None:
+            st.warning("DuckDB indisponível para carregar alunos do chat.")
+            return
+        try:
+            _students = conn.execute(
+                "SELECT id_aluno, nome, turma FROM info_alunos ORDER BY nome"
+            ).fetchall()
+        except Exception as ex:
+            st.warning(str(ex))
+            return
+        if not _students:
+            st.info("Não há alunos cadastrados para abrir conversas.")
+            return
+        options = [int(r[0]) for r in _students]
+        labels = {
+            int(r[0]): (
+                f"{str(r[1]).strip() or f'id_aluno={int(r[0])}'}"
+                + (f" ({str(r[2]).strip()})" if str(r[2] or "").strip() else "")
+            )
+            for r in _students
+        }
+        cur = st.session_state.get("rotina_direct_chat_student")
+        if not isinstance(cur, int) or cur not in options:
+            cur = options[0]
+            st.session_state.rotina_direct_chat_student = cur
+        thread_aid = int(
+            st.selectbox(
+                "Para qual aluno enviar a mensagem?",
+                options=options,
+                index=options.index(cur),
+                format_func=lambda v: labels[int(v)],
+                key="rotina_direct_chat_select_aluno",
+            )
+        )
+        st.session_state.rotina_direct_chat_student = thread_aid
+    else:
+        st.info("Faça login com um perfil válido para usar o chat direto.")
+        return
+
+    if thread_aid is None:
+        return
+    thread_key = str(thread_aid)
+    store = _load_direct_chat_store()
+    messages = store.get(thread_key, [])
+
+    if role_lc == "gestao":
+        _lbl = _student_label_for_chat(conn, thread_aid)
+        st.caption(
+            f"**Gestão:** pode apagar todo o histórico deste aluno (`{_lbl}`) — não afeta outras conversas."
+        )
+        if st.button(
+            "Limpar conversa deste aluno",
+            key=f"rotina_direct_chat_clear_{thread_key}",
+            type="secondary",
+        ):
+            store.pop(thread_key, None)
+            _persist_direct_chat_store(store)
+            st.success("Histórico deste aluno foi apagado.")
+            st.rerun()
+
+    for msg in messages:
+        speaker = msg.get("sender") or msg.get("sender_role") or "Utilizador"
+        sender_side = _normalize_direct_chat_sender_role(str(msg.get("sender_role") or ""))
+        if sender_side is None or viewer_side is None:
+            continue
+        bubble_role = "user" if sender_side == viewer_side else "assistant"
+        with st.chat_message(bubble_role):
+            st.caption(speaker)
+            st.markdown(msg.get("content") or "")
+
+    text = st.chat_input("Escreva sua mensagem para a outra parte…")
+    if text and text.strip():
+        if viewer_side is None:
+            return
+        new_msg = {
+            "content": text.strip(),
+            "sender": user_label,
+            "sender_role": viewer_side,
+        }
+        store.setdefault(thread_key, []).append(new_msg)
+        store[thread_key] = store[thread_key][-300:]
+        _persist_direct_chat_store(store)
+        st.rerun()
 
 
 def _coerce_stored_chat_messages_list(data: list[Any]) -> list[dict[str, str]] | None:
@@ -3376,6 +3663,8 @@ def init_session_state() -> None:
     st.session_state.setdefault("rotina_role", None)
     st.session_state.setdefault("rotina_user_label", "")
     st.session_state.setdefault("rotina_parent_id_aluno", None)
+    st.session_state.setdefault("rotina_sidebar_screen", "assistant")
+    st.session_state.setdefault("rotina_direct_chat_student", None)
 
 
 def _processing_status_sql_line(user_text: str, sql: str | None) -> str:
@@ -3437,6 +3726,7 @@ section.main div.block-container {
     display: flex !important;
     flex-direction: row !important;
     align-items: flex-end !important;
+    justify-content: center !important;
     gap: 0.5rem !important;
     background: var(
         --secondary-background-color,
@@ -3452,6 +3742,23 @@ section.main div.block-container {
     left: 0;
     width: 100%;
     overflow: visible !important;
+}
+/*
+ * Linha interna [chat | áudio]: alinhar pela base — o chat costuma ficar visualmente “mais acima”
+ * sem align-items no bloco horizontal filho.
+ */
+.rotina-chat-footer-row div[data-testid="stHorizontalBlock"] {
+    align-items: flex-end !important;
+}
+.rotina-chat-footer-row div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-end !important;
+}
+/* Garante que o widget de texto encosta ao fundo da coluna (mesma linha do botão de áudio). */
+.rotina-chat-footer-row [data-testid="stChatInput"] {
+    margin-top: auto !important;
+    margin-bottom: 0 !important;
 }
 /* Separador visual do expander "Gerar Relatório" (só área principal; sidebar não é section.main). */
 section.main div[data-testid="stExpander"] {
@@ -3490,7 +3797,8 @@ def _rotina_pin_chat_footer_row() -> None:
       return;
     }
     if (!rows.length) return;
-    const row = rows[rows.length - 1];
+    /* Primeira linha com chat = wrapper [margem | chat+áudio | margem ]; a última seria só o par interno. */
+    const row = rows[0];
     row.classList.add("rotina-chat-footer-row");
     const sb = doc.querySelector('[data-testid="stSidebar"]');
     const w = sb ? Math.round(sb.getBoundingClientRect().width) : 0;
@@ -3644,9 +3952,14 @@ def render_login() -> None:
                             return
                     else:
                         st.session_state.rotina_parent_id_aluno = None
+                    st.session_state.rotina_sidebar_screen = "assistant"
+                    st.session_state.rotina_direct_chat_student = None
                     st.session_state.messages = []
                     st.session_state.pop("_rotina_session_serial", None)
                     st.session_state.pop("_chat_disk_synced_for", None)
+                    _tok = _issue_browser_session_token()
+                    _save_browser_session_token(_tok, key)
+                    st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM] = _tok
                     st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
                     st.rerun()
                 else:
@@ -3656,18 +3969,50 @@ def render_login() -> None:
 def render_auth_sidebar() -> None:
     label = st.session_state.get("rotina_user_label") or "—"
     role = st.session_state.get("rotina_role") or ""
+    role_lc = str(role).strip().lower()
     st.markdown(f"**{label}**")
-    if role == "gestao":
+    if role_lc == "gestao":
         st.caption("Perfil: Gestão")
-    elif role == "educador":
+    elif role_lc == "educador":
         st.caption("Perfil: Educador (leitura)")
-    elif role == "familia":
+    elif role_lc == "familia":
         st.caption("Perfil: Família")
+    _left, _right = st.columns([1, 1], gap="small")
+    with _left:
+        if st.button("IA", key="rotina_sidebar_assistente_btn", help="Abrir Assistente IA"):
+            st.session_state.rotina_sidebar_screen = "assistant"
+            st.rerun()
+    with _right:
+        _direct_btn_label = (
+            "Chat direto escola"
+            if role_lc == "familia"
+            else "Chat direto família"
+        )
+        _direct_btn_help = (
+            "Abrir mensagens com a escola (educadores / gestão)."
+            if role_lc == "familia"
+            else "Abrir mensagens com as famílias (por aluno)."
+        )
+        if st.button(
+            _direct_btn_label,
+            key="rotina_sidebar_direct_chat_btn",
+            help=_direct_btn_help,
+        ):
+            st.session_state.rotina_sidebar_screen = "direct_chat"
+            st.rerun()
     if st.button("Sair", key="rotina_logout_btn"):
+        _ltok = _query_param_first(
+            st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM)
+        )
+        if _ltok:
+            _delete_browser_session_file(_ltok)
+        _clear_browser_session_query_param()
         st.session_state.rotina_authenticated = False
         st.session_state.rotina_role = None
         st.session_state.rotina_user_label = ""
         st.session_state.rotina_parent_id_aluno = None
+        st.session_state.rotina_sidebar_screen = "assistant"
+        st.session_state.rotina_direct_chat_student = None
         st.session_state.messages = []
         st.session_state.pop("_rotina_session_serial", None)
         st.session_state.pop("_chat_disk_synced_for", None)
@@ -3697,15 +4042,6 @@ def _render_chat_sidebar_internals() -> Any:
         format_func=lambda v: _labels[str(v)],
     )
     st.session_state.data_source_mode = str(sel)
-    st.caption(
-        "**Automático:** combina tabelas CSV e PDFs quando fizer sentido. "
-        "**DuckDB:** alunos, turmas, diário, refeições cadastradas, etc. "
-        "**Documentos:** regimento, PPP, normas e textos dos PDFs."
-    )
-    st.caption(
-        "Conversa e **relatório de rotina** ficam no mesmo ficheiro, ligados a "
-        f"`{ROTINA_CHAT_SESSION_SUBDIR}` em `ROTINA_DATA_DIR`."
-    )
     if st.button("Limpar conversa", key="rotina_clear_chat_btn"):
         _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
         if _old_cid and _is_safe_chat_session_id(_old_cid):
@@ -3783,28 +4119,30 @@ def render_rotina_chat(
     _msgs = st.session_state.messages
     _last_is_user = bool(_msgs and _msgs[-1]["role"] == "user")
 
-    _icol, _vcol = st.columns([8, 1], gap="small")
+    _gutter_l, _center_wrap, _gutter_r = st.columns([1, 2.2, 1], gap="small")
     _voice_blob = None
-    with _icol:
-        prompt = st.chat_input("Pergunte sobre rotinas, alunos ou documentos da escola…")
-    with _vcol:
-        _voice_preview = st.session_state.get("rotina_voice_preview_bytes")
-        if _voice_preview is not None:
-            st.audio(_voice_preview, format=_rotina_st_audio_format(_voice_preview))
-        elif hasattr(st, "audio_input"):
-            _vk = int(st.session_state.get("rotina_voice_input_key", 0))
-            _voice_blob = st.audio_input(
-                "🔊",
-                help=(
-                    "Grave a pergunta; ao concluir, o áudio vira texto. "
-                    "Se o som estiver fraco ou vazio na reprodução aqui, o Windows pode estar a usar "
-                    "outro microfone do que o Chrome/Edge: no ícone do cadeado ou da barra de endereço, "
-                    "abra as permissões do site e escolha o microfone certo (o mesmo do teste em Som)."
-                ),
-                key=f"rotina_chat_voice_{_vk}",
-            )
-        else:
-            st.caption("Atualize o Streamlit (≥ 1.40) para gravar por voz.")
+    with _center_wrap:
+        _icol, _vcol = st.columns([5, 1], gap="small")
+        with _icol:
+            prompt = st.chat_input("Pergunte sobre rotinas, alunos ou documentos da escola…")
+        with _vcol:
+            _voice_preview = st.session_state.get("rotina_voice_preview_bytes")
+            if _voice_preview is not None:
+                st.audio(_voice_preview, format=_rotina_st_audio_format(_voice_preview))
+            elif hasattr(st, "audio_input"):
+                _vk = int(st.session_state.get("rotina_voice_input_key", 0))
+                _voice_blob = st.audio_input(
+                    "🔊",
+                    help=(
+                        "Grave a pergunta; ao concluir, o áudio vira texto. "
+                        "Se o som estiver fraco ou vazio na reprodução aqui, o Windows pode estar a usar "
+                        "outro microfone do que o Chrome/Edge: no ícone do cadeado ou da barra de endereço, "
+                        "abra as permissões do site e escolha o microfone certo (o mesmo do teste em Som)."
+                    ),
+                    key=f"rotina_chat_voice_{_vk}",
+                )
+            else:
+                st.caption("Atualize o Streamlit (≥ 1.40) para gravar por voz.")
 
     _rotina_pin_chat_footer_row()
 
@@ -3817,16 +4155,34 @@ def render_rotina_chat(
                 with _rotina_voice_spinner_slot.container():
                     with st.spinner("Processando áudio…"):
                         _vtxt, _ver = transcribe_voice_bytes(_raw, _vname)
-                st.session_state.rotina_voice_preview_bytes = _raw
-                st.session_state.rotina_voice_hash = _vh
                 if _vtxt:
+                    st.session_state.rotina_voice_preview_bytes = _raw
+                    st.session_state.rotina_voice_hash = _vh
                     st.session_state.messages.append({"role": "user", "content": _vtxt})
                     st.session_state.rotina_voice_unlock_mic_after_reply = True
                     persist_rotina_chat_to_disk(chat_id)
                 else:
-                    st.session_state.rotina_voice_error = _ver or (
-                        "Não foi possível entender o áudio. Tente falar mais claro ou mais perto do microfone."
+                    # Sem texto: não manter preview (senão o microfone fica oculto atrás do st.audio).
+                    st.session_state.pop("rotina_voice_preview_bytes", None)
+                    st.session_state.rotina_voice_hash = ""
+                    st.session_state.rotina_voice_input_key = (
+                        int(st.session_state.get("rotina_voice_input_key", 0)) + 1
                     )
+                    if _ver == "__EMPTY_TRANSCRIPT__":
+                        st.session_state.messages.append(
+                            {
+                                "role": "assistant",
+                                "content": (
+                                    "Não foi detectada fala neste áudio (silêncio ou volume muito baixo). "
+                                    "Grave de novo; se o problema continuar, confira o microfone nas permissões do site."
+                                ),
+                            }
+                        )
+                        persist_rotina_chat_to_disk(chat_id)
+                    else:
+                        st.session_state.rotina_voice_error = _ver or (
+                            "Não foi possível entender o áudio. Tente falar mais claro ou mais perto do microfone."
+                        )
                 st.rerun()
 
     if prompt:
@@ -4080,9 +4436,14 @@ def _render_gestao_ou_educador(
     _chat_id = ensure_rotina_chat_session_id()
     sync_rotina_chat_from_disk(_chat_id)
     _rotina_chat_footer_css()
+    _screen = st.session_state.get("rotina_sidebar_screen", "assistant")
     with st.sidebar:
         render_auth_sidebar()
-        rag_sidebar_body = _render_chat_sidebar_internals()
+        rag_sidebar_body = (
+            _render_chat_sidebar_internals()
+            if _screen == "assistant"
+            else st.empty()
+        )
 
     try:
         conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
@@ -4105,6 +4466,10 @@ def _render_gestao_ou_educador(
                 )
         except Exception as e:
             st.error(f"Falha ao preparar ChromaDB/embeddings: {e}")
+
+    if _screen == "direct_chat":
+        render_direct_family_educator_chat(conn)
+        return
 
     st.subheader("Alunos cadastrados")
     if conn is not None:
@@ -4153,9 +4518,14 @@ def render_familia() -> None:
     _chat_id = ensure_rotina_chat_session_id()
     sync_rotina_chat_from_disk(_chat_id)
     _rotina_chat_footer_css()
+    _screen = st.session_state.get("rotina_sidebar_screen", "assistant")
     with st.sidebar:
         render_auth_sidebar()
-        rag_sidebar_body = _render_chat_sidebar_internals()
+        rag_sidebar_body = (
+            _render_chat_sidebar_internals()
+            if _screen == "assistant"
+            else st.empty()
+        )
 
     try:
         conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
@@ -4175,6 +4545,10 @@ def render_familia() -> None:
                 nome_filho = str(r[0])
         except Exception:
             pass
+
+    if _screen == "direct_chat":
+        render_direct_family_educator_chat(conn)
+        return
 
     st.info(
         f"Consulta restrita ao aluno **{nome_filho}** (id_aluno={aid}). "
@@ -4223,6 +4597,7 @@ def render_familia() -> None:
 def main() -> None:
     st.set_page_config(page_title="Rotina Viva", layout="wide", initial_sidebar_state="expanded")
     init_session_state()
+    try_restore_rotina_browser_session()
     if not st.session_state.get("rotina_authenticated"):
         render_login()
         return
