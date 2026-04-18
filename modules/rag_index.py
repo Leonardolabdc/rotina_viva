@@ -6,6 +6,7 @@ import hashlib
 import os
 import random
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -143,7 +144,7 @@ CHROMA_COLLECTION = _chroma_collection_name()
 
 PDF_NAMES = (
     "regimento_interno_escola.pdf",
-    "planejamento_nutricional_mensal.pdf",
+    "planejamento_nutricional_semanal.pdf",
     "guia_procedimentos_saude_seguranca.pdf",
     "PPP_DED_IBC.pdf",
 )
@@ -154,10 +155,68 @@ RAG_IDENTITY_SOURCES: tuple[str, ...] = (
     "PPP_DED_IBC.pdf",
 )
 
-# RAG: café da manhã, lanche, cardápio, refeições — só o documento de menu/planejamento.
+# RAG: café da manhã, lanche, cardápio, refeições — apenas o planejamento nutricional semanal.
 RAG_NUTRITION_SOURCES: tuple[str, ...] = (
-    "planejamento_nutricional_mensal.pdf",
+    "planejamento_nutricional_semanal.pdf",
 )
+
+
+def _rag_pdf_manifest_fingerprint(data_dir: Path) -> str:
+    """Muda com a lista `PDF_NAMES` ou com mtimes / presença dos ficheiros em `data_dir`."""
+    parts: list[str] = []
+    for name in PDF_NAMES:
+        p = data_dir / name
+        if p.is_file():
+            parts.append(f"{name}\t{p.stat().st_mtime_ns}")
+        else:
+            parts.append(f"{name}\tMISSING")
+    raw = "\n".join(parts) + "\n|pdf_names=" + "|".join(PDF_NAMES)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _rag_fingerprint_path(persist_dir: Path) -> Path:
+    return persist_dir / ".rotina_rag_index_fingerprint"
+
+
+def _read_rag_stored_fingerprint(persist_dir: Path) -> str | None:
+    path = _rag_fingerprint_path(persist_dir)
+    try:
+        t = path.read_text(encoding="utf-8").strip()
+        return t or None
+    except OSError:
+        return None
+
+
+def _write_rag_stored_fingerprint(persist_dir: Path, value: str) -> None:
+    try:
+        _rag_fingerprint_path(persist_dir).write_text(value, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _chromadb_client_persist(client: Any) -> None:
+    """Algumas versões do Chroma expõem `persist()` no cliente persistente."""
+    persist_fn = getattr(client, "persist", None)
+    if callable(persist_fn):
+        try:
+            persist_fn()
+        except Exception:
+            pass
+
+
+def reset_rotina_chroma_persist(persist_dir: Path | None = None) -> None:
+    """Apaga o diretório do ChromaDB (reindexação completa no próximo `get_chroma_collection`)."""
+    p = (persist_dir or CHROMA_DIR).resolve()
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def _drop_rotina_chroma_collection(client: Any, name: str) -> None:
+    try:
+        client.delete_collection(name)
+    except Exception:
+        pass
 
 
 
@@ -511,6 +570,36 @@ def add_with_retry(
                 )
 
 
+def ingest_rotina_pdf_documents(
+    collection: chromadb.Collection, data_dir: Path
+) -> int:
+    """Lê `PDF_NAMES`, segmenta, gera embeddings e grava na coleção `CHROMA_COLLECTION`."""
+    total_used = 0
+    batch = effective_chroma_add_batch()
+    for pdf_name in PDF_NAMES:
+        if total_used >= MAX_CHUNKS_TOTAL:
+            break
+        pdf_path = data_dir / pdf_name
+        if not pdf_path.exists():
+            continue
+        full_text = extract_pdf_text(pdf_path)
+        cap = min(MAX_CHUNKS_PER_PDF, MAX_CHUNKS_TOTAL - total_used)
+        chunks = chunk_pdf_for_index(full_text, cap)
+        if not chunks:
+            continue
+        docs_pdf: list[str] = []
+        ids_pdf: list[str] = []
+        metas_pdf: list[dict[str, Any]] = []
+        for i, ch in enumerate(chunks):
+            docs_pdf.append(_rag_text_for_embedding_index(ch))
+            ids_pdf.append(f"{pdf_name}::{i}")
+            metas_pdf.append({"source": pdf_name, "chunk": str(i)})
+        add_with_retry(collection, docs_pdf, ids_pdf, metas_pdf, batch_size=batch)
+        total_used += len(chunks)
+        if ROTINA_API_PAUSE_BETWEEN_PDF_SEC > 0:
+            time.sleep(ROTINA_API_PAUSE_BETWEEN_PDF_SEC)
+    return total_used
+
 
 @st.cache_resource
 def get_chroma_collection(
@@ -523,6 +612,9 @@ def get_chroma_collection(
     data_dir = Path(data_dir_str)
     persist_dir.mkdir(parents=True, exist_ok=True)
 
+    fp_now = _rag_pdf_manifest_fingerprint(data_dir)
+    fp_stored = _read_rag_stored_fingerprint(persist_dir)
+
     emb = build_chroma_embedding_function()
     client = chromadb.PersistentClient(path=str(persist_dir))
     collection = client.get_or_create_collection(
@@ -531,31 +623,22 @@ def get_chroma_collection(
         metadata={"description": "Rotina Viva — documentos institucionais"},
     )
 
+    need_reingest = fp_stored != fp_now or collection.count() == 0
+    if need_reingest and collection.count() > 0:
+        _drop_rotina_chroma_collection(client, CHROMA_COLLECTION)
+        collection = client.get_or_create_collection(
+            name=CHROMA_COLLECTION,
+            embedding_function=emb,
+            metadata={"description": "Rotina Viva — documentos institucionais"},
+        )
+
     if collection.count() == 0:
-        total_used = 0
-        batch = effective_chroma_add_batch()
-        for pdf_name in PDF_NAMES:
-            if total_used >= MAX_CHUNKS_TOTAL:
-                break
-            pdf_path = data_dir / pdf_name
-            if not pdf_path.exists():
-                continue
-            full_text = extract_pdf_text(pdf_path)
-            cap = min(MAX_CHUNKS_PER_PDF, MAX_CHUNKS_TOTAL - total_used)
-            chunks = chunk_pdf_for_index(full_text, cap)
-            if not chunks:
-                continue
-            docs_pdf: list[str] = []
-            ids_pdf: list[str] = []
-            metas_pdf: list[dict[str, Any]] = []
-            for i, ch in enumerate(chunks):
-                docs_pdf.append(_rag_text_for_embedding_index(ch))
-                ids_pdf.append(f"{pdf_name}::{i}")
-                metas_pdf.append({"source": pdf_name, "chunk": str(i)})
-            add_with_retry(collection, docs_pdf, ids_pdf, metas_pdf, batch_size=batch)
-            total_used += len(chunks)
-            if ROTINA_API_PAUSE_BETWEEN_PDF_SEC > 0:
-                time.sleep(ROTINA_API_PAUSE_BETWEEN_PDF_SEC)
+        ingest_rotina_pdf_documents(collection, data_dir)
+        _write_rag_stored_fingerprint(persist_dir, fp_now)
+        _chromadb_client_persist(client)
+    elif fp_stored is None and collection.count() > 0:
+        _write_rag_stored_fingerprint(persist_dir, fp_now)
+
     return collection
 
 

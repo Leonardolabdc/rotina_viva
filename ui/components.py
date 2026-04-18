@@ -24,6 +24,7 @@ from core.auth_manager import (
 )
 from core.database import (
     DATA_DIR,
+    _mensagem_csv_aberto_simples,
     _chat_session_dir,
     _direct_chat_path,
     _ensure_direct_chat_store_file,
@@ -37,6 +38,7 @@ from core.database import (
     run_mutation_and_persist,
     run_safe_select,
     sync_rotina_chat_from_disk,
+    promote_plan_sql_mutation_field,
     validate_mutation_sql,
     _duckdb_csv_reload_token,
 )
@@ -47,6 +49,7 @@ from modules.chat_service import (
     _reply_delete_not_persisted_no_mutation,
     _student_label_for_chat,
     _user_requests_student_delete,
+    try_gestao_delete_by_name_intent,
     apply_parent_sql_scope,
     apply_user_data_source_mode,
     augment_question_for_parent_rag,
@@ -59,6 +62,7 @@ from modules.rag_index import (
     ROTINA_API_PLAN_TO_CHAT_DELAY_SEC,
     RAG_TOP_K,
     get_chroma_collection,
+    reset_rotina_chroma_persist,
     retrieve_rag_context_and_chunks,
 )
 from modules.services import (
@@ -391,6 +395,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("rotina_parent_id_aluno", None)
     st.session_state.setdefault("rotina_sidebar_screen", "assistant")
     st.session_state.setdefault("rotina_direct_chat_student", None)
+    st.session_state.setdefault("rotina_login_username", "")
 
 def pin_chat_footer_row() -> None:
     """Fixa a linha com st.chat_input no rodapé e alinha à largura da área principal."""
@@ -530,6 +535,21 @@ def render_chat_sidebar_internals() -> Any:
     st.markdown("**Trechos (RAG)**")
     return st.empty()
 
+
+def _render_rotina_logo_header() -> None:
+    """Logo centrada (mesmo caminho `DATA_DIR`); usada acima da tabela em Gestão/Educador."""
+    _logo_path = DATA_DIR / "logo_rotina_viva.png"
+    _lg_l, _lg_m, _lg_r = st.columns([1, 1, 1])
+    with _lg_m:
+        if _logo_path.is_file():
+            st.image(str(_logo_path), use_container_width=True)
+        else:
+            st.warning(
+                f"Logo não encontrada: `{_logo_path.name}`. "
+                "Coloque o arquivo em `ROTINA_DATA_DIR` (ex.: pasta `data/`)."
+            )
+
+
 def render_rotina_chat(
     chat_id: str,
     conn: duckdb.DuckDBPyConnection | None,
@@ -543,20 +563,13 @@ def render_rotina_chat(
     planner_extra: str,
     chat_extra_system: str | None,
     report_parent_lock: tuple[int, str] | None,
+    show_logo: bool = True,
 ) -> None:
-    """Área principal: logo, relatório, chat (texto + áudio), processamento SQL/RAG/mutação."""
+    """Área principal: logo (opcional), relatório, chat (texto + áudio), processamento SQL/RAG/mutação."""
     _rep_phase = st.session_state.get("sleep_rep_phase", "idle")
     _exp_relatorio = _rep_phase != "idle"
-    _logo_path = DATA_DIR / "logo_rotina_viva.png"
-    _lg_l, _lg_m, _lg_r = st.columns([1, 1, 1])
-    with _lg_m:
-        if _logo_path.is_file():
-            st.image(str(_logo_path), use_container_width=True)
-        else:
-            st.warning(
-                f"Logo não encontrada: `{_logo_path.name}`. "
-                "Coloque o arquivo em `ROTINA_DATA_DIR` (ex.: pasta `data/`)."
-            )
+    if show_logo:
+        _render_rotina_logo_header()
     with st.expander(
         "Gerar Relatório de Rotina",
         expanded=_exp_relatorio,
@@ -670,6 +683,47 @@ def render_rotina_chat(
             history_for_model = _msgs[:-1]
 
             with st.chat_message("assistant"):
+                _handled_name, _ok_name, _msg_name = try_gestao_delete_by_name_intent(
+                    user_text,
+                    DATA_DIR,
+                    session_role=st.session_state.get("rotina_role"),
+                    allow_delete_mutations=allow_delete_mutations,
+                )
+                if _handled_name:
+                    if _ok_name:
+                        st.cache_data.clear()
+                        try:
+                            get_duckdb_connection.clear()
+                        except Exception:
+                            pass
+                        _conn_reload = get_duckdb_connection(
+                            str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR)
+                        )
+                        _vblock = post_mutation_verification_block(
+                            _conn_reload, "DELETE FROM info_alunos"
+                        )
+                        _full_name = build_mutation_direct_reply(
+                            mut_sql="DELETE FROM info_alunos",
+                            ok=True,
+                            result_message=_msg_name,
+                            duplicate_warn="",
+                            duck_block=_vblock,
+                        )
+                        st.markdown(_full_name)
+                        st.session_state.messages.append(
+                            {"role": "assistant", "content": _full_name}
+                        )
+                        persist_rotina_chat_to_disk(chat_id)
+                        render_rag_sidebar_body(rag_sidebar_body)
+                        return
+                    st.error(_msg_name)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": _msg_name}
+                    )
+                    persist_rotina_chat_to_disk(chat_id)
+                    render_rag_sidebar_body(rag_sidebar_body)
+                    return
+
                 plan_force: str | None = None
                 if mode_ds == "structured":
                     plan_force = "sql_only"
@@ -695,6 +749,7 @@ def render_rotina_chat(
                             user_text,
                         )
                         plan = apply_user_data_source_mode(plan, mode_ds)
+                        plan = promote_plan_sql_mutation_field(plan)
                         if read_only_db:
                             plan["mutacao"] = None
                         fontes = plan.get("fontes") or ["rag"]
@@ -729,7 +784,11 @@ def render_rotina_chat(
                             isinstance(mut_sql, str)
                             and mut_sql.strip()
                             and not allow_delete_mutations
-                            and re.match(r"^\s*delete\b", mut_sql.strip(), re.IGNORECASE)
+                            and re.search(
+                                r"\bdelete\s+from\b",
+                                mut_sql.strip(),
+                                re.IGNORECASE,
+                            )
                         ):
                             mutation_attempted = True
                             mutation_fail_detail = (
@@ -758,6 +817,12 @@ def render_rotina_chat(
                             if mok:
                                 mutation_ok = True
                                 mut_sql_done = mut_sql.strip()
+                                if re.search(
+                                    r"\bdelete\s+from\b",
+                                    mut_sql_done,
+                                    re.IGNORECASE,
+                                ):
+                                    st.cache_data.clear()
                                 _conn = get_duckdb_connection(
                                     str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR)
                                 )
@@ -797,14 +862,21 @@ def render_rotina_chat(
                                     + duck_block
                                 )
                             else:
-                                duck_block = (
-                                    "=== A alteração aos dados NÃO foi gravada nos CSV ===\n"
-                                    f"{mutation_fail_detail}\n\n"
-                                    "Esta falha costuma ocorrer quando o ficheiro está aberto no Excel ou noutro editor. "
-                                    "Feche o CSV, guarde se necessário, e volte a pedir a alteração no chat.\n\n"
-                                    "---\n\n"
-                                    + duck_block
-                                )
+                                if mutation_fail_detail.strip() == _mensagem_csv_aberto_simples():
+                                    duck_block = (
+                                        "=== A alteração aos dados NÃO foi gravada nos CSV ===\n"
+                                        f"{mutation_fail_detail}\n\n---\n\n"
+                                        + duck_block
+                                    )
+                                else:
+                                    duck_block = (
+                                        "=== A alteração aos dados NÃO foi gravada nos CSV ===\n"
+                                        f"{mutation_fail_detail}\n\n"
+                                        "Esta falha costuma ocorrer quando o ficheiro está aberto no Excel ou noutro editor. "
+                                        "Feche o CSV, guarde se necessário, e volte a pedir a alteração no chat.\n\n"
+                                        "---\n\n"
+                                        + duck_block
+                                    )
 
                         if mutation_ok and mut_sql_done and _conn is not None:
                             proc.write("Verificando estado após alteração nos CSV…")
@@ -985,13 +1057,44 @@ def _render_gestao_ou_educador(
         render_direct_family_educator_chat(conn)
         return
 
+    _render_rotina_logo_header()
+    if st.session_state.get("rotina_role") == "gestao":
+        with st.expander("Resetar banco de conhecimento (RAG)", expanded=False):
+            st.caption(
+                "Apaga o índice ChromaDB em disco e força nova leitura dos PDFs em ROTINA_DATA_DIR. "
+                "Use após trocar ou substituir documentos."
+            )
+            if st.button(
+                "Resetar Banco de Conhecimento",
+                key="rotina_reset_rag_knowledge",
+                type="primary",
+            ):
+                reset_rotina_chroma_persist(CHROMA_DIR)
+                try:
+                    get_chroma_collection.clear()
+                except Exception:
+                    pass
+                st.success("Índice RAG removido. A página vai recarregar.")
+                st.rerun()
     st.subheader("Alunos cadastrados")
     if conn is not None:
         try:
             _df_alunos = conn.execute(
                 "SELECT id_aluno, nome, turma, alergias FROM info_alunos ORDER BY nome"
             ).fetchdf()
-            st.dataframe(_df_alunos, use_container_width=True, hide_index=True)
+            # ~metade das linhas visíveis vs. altura por omissão (~10 linhas → ~5)
+            _n = len(_df_alunos)
+            _row_px = 36
+            _header_px = 44
+            _max_vis = 5
+            _vis = max(2, min(_n, _max_vis)) if _n else 2
+            _table_h = min(320, _header_px + _vis * _row_px)
+            st.dataframe(
+                _df_alunos,
+                use_container_width=True,
+                hide_index=True,
+                height=_table_h,
+            )
         except Exception as ex:
             st.warning(str(ex))
     else:
@@ -1010,6 +1113,7 @@ def _render_gestao_ou_educador(
         planner_extra=planner_extra,
         chat_extra_system=None,
         report_parent_lock=None,
+        show_logo=False,
     )
 
 

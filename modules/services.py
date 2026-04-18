@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 import altair as alt
 import duckdb
 import pandas as pd
 
+from core.database import _is_csv_escrita_bloqueada, _mensagem_csv_aberto_simples
 from modules import chat_service
 
 
@@ -697,6 +699,124 @@ def sleep_meal_report_summary_md(
     return "\n\n".join(parts)
 
 
+def _resolve_info_alunos_csv_path(data_dir: Path) -> Path:
+    base = data_dir.resolve()
+    for name in ("info_alunos.csv", "info_alunos_v2.csv"):
+        p = base / name
+        if p.is_file():
+            return p
+    return base / "info_alunos.csv"
+
+
+def _dataframe_to_csv_atomic(df: pd.DataFrame, path: Path, *, encoding: str = "utf-8-sig") -> None:
+    """Sobrescreve o CSV com o conteúdo do DataFrame (escrita atómica .tmp + replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    df.to_csv(str(tmp.resolve()), index=False, encoding=encoding)
+    tmp.replace(path)
+
+
+def remove_alunos_by_nome_contains_csv(
+    data_dir: Path, nome_fragmento: str
+) -> tuple[str, bool]:
+    """
+    Remove linhas de `info_alunos` em que a coluna `nome` contém o fragmento (case-insensitive, correspondência literal).
+    Remove também linhas em `diario_estruturado` com os `id_aluno` afectados.
+    """
+    needle = (nome_fragmento or "").strip()
+    if len(needle) < 2:
+        return "Indique pelo menos 2 caracteres do nome para buscar.", False
+    base = data_dir.resolve()
+    info_path = _resolve_info_alunos_csv_path(base)
+    if not info_path.is_file():
+        return f"CSV de alunos não encontrado em {info_path}.", False
+    try:
+        df_info = pd.read_csv(info_path, encoding="utf-8-sig")
+    except Exception as e:
+        return f"Erro ao ler cadastro de alunos: {e}", False
+    if "id_aluno" not in df_info.columns or "nome" not in df_info.columns:
+        return "O CSV de alunos precisa das colunas id_aluno e nome.", False
+    names = df_info["nome"].fillna("").astype(str)
+    mask = names.str.contains(needle, case=False, na=False, regex=False)
+    if not bool(mask.any()):
+        return f"Nenhuma linha em `nome` contém «{needle}».", False
+    ids_rm = (
+        pd.to_numeric(df_info.loc[mask, "id_aluno"], errors="coerce")
+        .dropna()
+        .astype(int)
+        .unique()
+        .tolist()
+    )
+    df_info_out = df_info.loc[~mask].copy()
+    diario_path = base / "diario_estruturado.csv"
+    try:
+        if diario_path.is_file() and ids_rm:
+            df_d = pd.read_csv(diario_path, encoding="utf-8-sig")
+            if "id_aluno" in df_d.columns:
+                id_d = pd.to_numeric(df_d["id_aluno"], errors="coerce")
+                df_d_out = df_d.loc[~id_d.isin(ids_rm)].copy()
+                _dataframe_to_csv_atomic(df_d_out, diario_path)
+        _dataframe_to_csv_atomic(df_info_out, info_path)
+    except Exception as e:
+        if _is_csv_escrita_bloqueada(e):
+            return _mensagem_csv_aberto_simples(), False
+        return f"Erro ao gravar CSV: {e}", False
+    n = int(mask.sum())
+    ids_txt = ", ".join(str(x) for x in ids_rm)
+    return (
+        f"Removida(s) **{n}** linha(s) de cadastro onde «nome» contém «{needle}» (ids: {ids_txt}). "
+        "Registos do diário desses ids foram actualizados quando o CSV do diário existe.",
+        True,
+    )
+
+
+def excluir_registos_aluno_por_sobrescrita_csv(
+    data_dir: Path, id_aluno: int
+) -> tuple[str, bool]:
+    """
+    Manutenção local: remove o aluno do cadastro e as linhas do diário com o mesmo `id_aluno`,
+    lendo e gravando os CSV com pandas (sem validação SQL de mutação).
+    """
+    try:
+        aid = int(id_aluno)
+    except (TypeError, ValueError):
+        return "id_aluno inválido.", False
+    if aid < 1:
+        return "id_aluno inválido.", False
+    base = data_dir.resolve()
+    info_path = _resolve_info_alunos_csv_path(base)
+    if not info_path.is_file():
+        return f"CSV de alunos não encontrado em {info_path}.", False
+    try:
+        df_info = pd.read_csv(info_path, encoding="utf-8-sig")
+    except Exception as e:
+        return f"Erro ao ler cadastro de alunos: {e}", False
+    if "id_aluno" not in df_info.columns:
+        return "O CSV de alunos não contém a coluna id_aluno.", False
+    ids = pd.to_numeric(df_info["id_aluno"], errors="coerce")
+    if not (ids == aid).any():
+        return f"Não existe aluno com id_aluno={aid}.", False
+    df_info_out = df_info.loc[ids != aid].copy()
+    diario_path = base / "diario_estruturado.csv"
+    try:
+        if diario_path.is_file():
+            df_d = pd.read_csv(diario_path, encoding="utf-8-sig")
+            if "id_aluno" in df_d.columns:
+                id_d = pd.to_numeric(df_d["id_aluno"], errors="coerce")
+                df_diario_out = df_d.loc[id_d != aid].copy()
+                _dataframe_to_csv_atomic(df_diario_out, diario_path)
+        _dataframe_to_csv_atomic(df_info_out, info_path)
+    except Exception as e:
+        if _is_csv_escrita_bloqueada(e):
+            return _mensagem_csv_aberto_simples(), False
+        return f"Erro ao gravar CSV: {e}", False
+    return (
+        f"Aluno **id_aluno={aid}** removido do cadastro por sobrescrita do ficheiro; "
+        "linhas do diário com esse id foram também removidas quando o CSV do diário existe.",
+        True,
+    )
+
+
 # API pública (UI importa estes nomes)
 sleep_line_chart_altair = _sleep_line_chart_altair
 meal_intake_stacked_bar_altair = _meal_intake_stacked_bar_altair
@@ -704,6 +824,8 @@ sleep_reference_table_df = _sleep_reference_table_ui
 
 __all__ = [
     "chat_service",
+    "remove_alunos_by_nome_contains_csv",
+    "excluir_registos_aluno_por_sobrescrita_csv",
     "ROTINA_SONO_MAX_MIN",
     "ROTINA_SONO_FAIXA_LIMITE_1",
     "ROTINA_SONO_FAIXA_LIMITE_2",

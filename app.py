@@ -36,6 +36,7 @@ def main() -> None:
         render_familia()
     else:
         st.session_state.rotina_authenticated = False
+        st.session_state.rotina_login_username = ""
         st.error("Sessão inválida. Entre novamente.")
         render_login()
 

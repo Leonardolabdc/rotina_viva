@@ -176,11 +176,11 @@ def system_mutation_applied() -> str:
 
 
 def system_mutation_failed() -> str:
-    return """Falha ao gravar alteração nos CSV desta instalação (Rotina Viva):
-- Nos dados tabulares acima há uma secção **"A alteração aos dados NÃO foi gravada"** com o motivo real (permissão, ficheiro em uso, etc.).
-- Responda de forma **prática**: o utilizador deve **fechar** `info_alunos.csv` e/ou `diario_estruturado.csv` se estiverem abertos no **Excel** ou noutro editor (no Windows isto bloqueia a escrita), e voltar a pedir a alteração.
-- **Não** diga que não tem acesso a "sistemas de gestão" ou que só pode "fornecer informações" — nesta app a alteração é feita aqui; o problema é **técnico local** (não foi possível escrever no disco).
-- Seja breve e acertivo: uma frase sobre fechar o ficheiro + repetir o pedido."""
+    return (
+        "A alteração não foi gravada nos CSV. Se o motivo for ficheiro em uso, responda ao utilizador "
+        "**apenas** com esta frase, sem acrescentar explicações: "
+        "«O arquivo CSV está aberto. Feche-o e tente novamente.»"
+    )
 
 
 def system_duplicate_cadastro() -> str:
@@ -191,9 +191,19 @@ def system_duplicate_cadastro() -> str:
 - Não omita o aviso; seja breve."""
 
 
+def planner_suffix_gestao_mutation_permission_note() -> str:
+    """Texto anexado ao planeador só no perfil Gestão (RBAC)."""
+    return (
+        "**Permissão total (Gestão):** Você tem permissão total para planejar exclusão e alteração nos CSV "
+        "(`info_alunos`, `diario_estruturado`). Se o utilizador pedir para apagar ou alterar dados, preencha "
+        '`"mutacao"` com o SQL apropriado — **sem** avisos genéricos de segurança que recusem ou bloqueiem o pedido; '
+        "o utilizador já está autenticado como gestão nesta aplicação."
+    )
+
+
 def schema_duckdb_for_llm() -> str:
     return """
-Tabelas DuckDB (somente leitura; use SELECT):
+Tabelas DuckDB (consultas em `"sql"`: use SELECT; alterações em `"mutacao"`: INSERT/UPDATE/DELETE nas tabelas indicadas):
 
 1) info_alunos
    Colunas: id_aluno (INTEGER), nome (TEXT), turma (TEXT), alergias (TEXT), contato_pais (TEXT)
@@ -376,7 +386,7 @@ Regras (siga com cuidado):
 Responda somente JSON válido com **três chaves** (use `null` quando não aplicável):
 {{"fontes": ["rag"] ou ["sql"] ou ["rag","sql"] ou ["sql","rag"], "sql": null ou uma string com UMA consulta SELECT DuckDB, "mutacao": null ou UMA string SQL (INSERT/UPDATE/DELETE) apenas nas tabelas `info_alunos` e `diario_estruturado`}}
 
-- **"mutacao"** só preencha quando o utilizador pedir **criar, alterar ou apagar** dados nessas tabelas; caso contrário `"mutacao": null`. Regras de **quem pode DELETE** ou só INSERT/UPDATE vêm das instruções de perfil/RBAC abaixo (se existirem) — respeite-as sempre.
+- **"mutacao"** só preencha quando o utilizador pedir **criar, alterar ou apagar** dados nessas tabelas; caso contrário `"mutacao": null`. O bloco **RBAC** abaixo define **quem** pode usar DELETE. Quando o RBAC autorizar **Gestão**, não recuse nem omita DELETE por cautela genérica — produza o SQL em `"mutacao"`. Quando o RBAC disser que DELETE não é permitido (ex.: Educador), respeite e use `"mutacao": null` para DELETE.
 - Se "sql" estiver em fontes e precisar de dados tabulares, "sql" deve ser a string SELECT. Se não souber a consulta, **não** inclua "sql" em fontes — use só "rag".
 """
     if force == "sql_only":
@@ -384,7 +394,7 @@ Responda somente JSON válido com **três chaves** (use `null` quando não aplic
 MODO **somente dados estruturados** (sidebar: só DuckDB / CSV — sem PDFs nesta rodada):
 - **Se o utilizador pedir gravar dados** (cadastrar aluno, inserir/atualizar diário, alterar turma, etc.): `"fontes": ["sql"]` e preencha **"mutacao"** com **um** INSERT ou UPDATE conforme o esquema. Acompanhe com um `"sql"` SELECT útil quando fizer falta; `"sql"` pode ser `null` só se a mutação bastar. **Não** devolva `"mutacao": null` só porque este modo chama-se “só dados” — esse modo significa sem RAG, **não** proíbe escrita.
 - **Se for só consulta** (listar, contar, turma de X, alergias…): `{"fontes": ["sql"], "sql": "SELECT ...", "mutacao": null}`.
-- Perfis / DELETE: siga o bloco **RBAC** colocado **depois** deste modo (última palavra sobre o que pode ir em `"mutacao"`).
+- Perfis / DELETE: siga o bloco **RBAC** depois deste modo. Com **Gestão**, inclua DELETE em `"mutacao"` quando o utilizador pedir remoção.
 - Perguntas do tipo “qual é a turma do [nome]?” → **obrigatoriamente** filtre `info_alunos` por `nome` (ex.: `WHERE nome ILIKE '%primeiro%ultimo%'`).
   **Não** use só `SELECT DISTINCT turma` ou listar turmas sem JOIN/WHERE no nome — isso não identifica o aluno.
 - Perguntas sobre **alergia / intolerância / restrição alimentar de um aluno** (ou “quem tem alergia a X”) → `SELECT nome, turma, alergias FROM info_alunos` com `WHERE` em `nome` e/ou `alergias` (coluna **`alergias`**). Não devolva `sql: null` só porque a palavra parece “saúde”.

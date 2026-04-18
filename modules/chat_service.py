@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Iterable
 
 import duckdb
 
-from core.database import validate_mutation_sql
+from core.database import validate_mutation_sql, _mensagem_csv_aberto_simples
 
 
 
@@ -123,7 +124,7 @@ def is_rag_identity_scope_question(message: str) -> bool:
     )
 
 
-# Perguntas sobre cardápio / refeições / café da manhã → priorizar `planejamento_nutricional_mensal.pdf` no RAG
+# Perguntas sobre cardápio / refeições / café da manhã → priorizar PDFs de planejamento nutricional no RAG
 # (evita que o 1.º trecho na sidebar seja outro PDF que só menciona “alimentação” em geral).
 NUTRITION_MEALS_SCOPE_RE = re.compile(
     r"(caf[ée]\s*(da\s*)?manh[ãa]|"
@@ -158,11 +159,13 @@ def is_rag_nutrition_meals_scope_question(message: str) -> bool:
 
 def _plan_mutacao_targets_csv_tables(plan: dict[str, Any]) -> bool:
     mut = plan.get("mutacao")
-    if not isinstance(mut, str) or not mut.strip():
-        return False
-    return bool(
-        re.search(r"\b(info_alunos|diario_estruturado)\b", mut, re.IGNORECASE)
-    )
+    if isinstance(mut, str) and mut.strip():
+        if re.search(r"\b(info_alunos|diario_estruturado)\b", mut, re.IGNORECASE):
+            return True
+    sql = plan.get("sql")
+    if isinstance(sql, str) and sql.strip() and validate_mutation_sql(sql.strip()):
+        return True
+    return False
 
 
 # Verbos de exclusão (infinitivo e imperativo comum em PT-BR) para detetar pedidos ao planeador/chat.
@@ -186,6 +189,8 @@ def _user_natural_language_cadastro_mutation_intent(user_message: str) -> bool:
         r"\b(?:cadastrar|registrar|adicionar|incluir|criar|inserir|salvar|gravar)\b.{0,72}\b(?:aluno|alunos)\b",
         rf"\b(?:{_DELETE_VERB_GROUP})\b.{{0,72}}\b(?:aluno|alunos|cadastro)\b",
         rf"\b(?:{_DELETE_VERB_GROUP})\b.{{0,40}}\b(?:do\s+cadastro|o\s+cadastro)\b",
+        # "apagar leonardo, miguel e gustavo" — lista de nomes sem a palavra "aluno"
+        rf"\b(?:{_DELETE_VERB_GROUP})\b.{{0,200}}(?:,|;|\be\b|\bou\b)",
         r"\bnov[oa]\s+aluno\b",
         r"\b(?:atualizar|alterar|modificar)\b.{0,72}\b(?:cadastro|aluno|alunos)\b",
         r"\b(?:inserir|gravar|registrar)\b.{0,72}\b(?:di[aá]rio|diario)\b",
@@ -277,6 +282,64 @@ def _first_re_group(pattern: str, text: str) -> str | None:
     return m.group(1)
 
 
+def parse_gestao_delete_aluno_nome_fragmento(user_message: str) -> str | None:
+    """
+    Detecta pedidos do tipo «apague o aluno [NOME]» / «remover aluno X» e devolve o fragmento de nome.
+    Devolve None se não for um comando directo de exclusão por nome.
+    """
+    s = (user_message or "").strip()
+    if not s:
+        return None
+    m = re.search(
+        r"(?is)\b(?:apague|apagar|remova|remover|elimine|eliminar|exclua|excluir|deletar|delete)\b\s*"
+        r"(?:o\s+|a\s+)?(?:(?:aluno|aluna|alunos|alunas)\s+)?['\"]?(.+?)['\"]?\s*$",
+        s,
+    )
+    if not m:
+        return None
+    frag = (m.group(1) or "").strip()
+    for sfx in (
+        " do cadastro",
+        " da escola",
+        " permanente",
+        " permanentemente",
+        " por favor",
+        " pf",
+        " pf.",
+    ):
+        if frag.lower().endswith(sfx):
+            frag = frag[: -len(sfx)].strip()
+    frag = frag.strip(' \t."\'`')
+    if len(frag) < 2:
+        return None
+    return frag
+
+
+def try_gestao_delete_by_name_intent(
+    user_message: str,
+    data_dir: Path,
+    *,
+    session_role: str | None,
+    allow_delete_mutations: bool,
+) -> tuple[bool, bool, str]:
+    """
+    Se for perfil Gestão e mensagem do tipo «apague o aluno [NOME]», aplica `delete_by_name` nos CSV.
+
+    Retorno: ``(handled, success, message)``.
+    - ``handled=False`` → seguir o fluxo normal (planejador / SQL).
+    - ``handled=True`` → já respondemos ao pedido; ``success`` e ``message`` descrevem o resultado.
+    """
+    if (session_role or "").strip().lower() != "gestao" or not allow_delete_mutations:
+        return False, False, ""
+    frag = parse_gestao_delete_aluno_nome_fragmento(user_message)
+    if frag is None:
+        return False, False, ""
+    from core.database import delete_by_name
+
+    msg, ok = delete_by_name(frag, data_dir=data_dir)
+    return True, ok, msg
+
+
 def _user_requests_student_delete(user_message: str) -> bool:
     """Pedido explícito de remover aluno do cadastro (verbo de exclusão antes do objeto)."""
     um = (user_message or "").strip().lower()
@@ -298,6 +361,12 @@ def _user_requests_student_delete(user_message: str) -> bool:
         return False
     if re.search(rf"\b(?:evitar|impedir)\b.{{0,24}}\b(?:{_DELETE_VERB_GROUP})\b", um):
         return False
+    if re.search(
+        rf"\b(?:{_DELETE_VERB_GROUP})\b.{{0,200}}(?:,|;|\be\b|\bou\b)",
+        um,
+        re.DOTALL,
+    ):
+        return True
     # Só verbo → objeto (ex.: "apague o aluno"). Evita "novo aluno ... sem remover X" (falso positivo).
     return bool(
         re.search(
@@ -342,6 +411,8 @@ def build_mutation_direct_reply(
         msg = result_message.strip() or (
             "A alteração não foi gravada. Feche o CSV se estiver aberto e tente novamente."
         )
+        if msg == _mensagem_csv_aberto_simples():
+            return msg
         lowm = (mut_sql or "").lower()
         if re.search(r"\bdelete\s+from\s+info_alunos\b", lowm):
             msg += "\n\nO cadastro em CSV **não foi alterado** por este pedido."

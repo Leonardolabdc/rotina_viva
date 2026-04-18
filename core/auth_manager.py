@@ -11,6 +11,8 @@ from typing import Any
 
 import streamlit as st
 
+from modules.ai_engine import planner_suffix_gestao_mutation_permission_note
+
 from core.database import (
     DATA_DIR,
     _browser_session_dir,
@@ -18,6 +20,7 @@ from core.database import (
     _is_safe_chat_session_id,
     _save_browser_session_token,
     load_rotina_users,
+    reset_sleep_meal_report_ui_state,
 )
 
 ROTINA_CHAT_QUERY_PARAM = "rotina_chat"
@@ -100,6 +103,7 @@ def try_restore_rotina_browser_session() -> bool:
     if role not in VALID_ROTINA_ROLES:
         return False
     st.session_state.rotina_authenticated = True
+    st.session_state.rotina_login_username = username
     st.session_state.rotina_role = role
     st.session_state.rotina_user_label = str(rec.get("display_name") or username).strip()
     if role == "familia":
@@ -107,6 +111,7 @@ def try_restore_rotina_browser_session() -> bool:
             st.session_state.rotina_parent_id_aluno = int(rec.get("id_aluno"))
         except (TypeError, ValueError):
             st.session_state.rotina_authenticated = False
+            st.session_state.rotina_login_username = ""
             return False
     else:
         st.session_state.rotina_parent_id_aluno = None
@@ -143,8 +148,14 @@ def _planner_suffix_gestao() -> str:
         "Após mutação bem-sucedida o servidor corre SELECTs de verificação (estado **final** dos CSV); "
         "na resposta, confirme o sucesso do pedido — não trate a linha inserida como duplicata pré-existente. "
         "Antes de gravar, o servidor pode avisar se **nome** ou **contacto** já existiam noutra linha — repita esse aviso ao utilizador. "
+        "**Apagar aluno:** use **obrigatoriamente** o campo **\"mutacao\"** com o SQL (não coloque DELETE só em `\"sql\"` — "
+        "`\"sql\"` é só para SELECT). Ordem segura: **primeiro** `DELETE FROM diario_estruturado WHERE id_aluno = …`, "
+        "**depois** `DELETE FROM info_alunos WHERE id_aluno = …` (ou um único `DELETE` em `info_alunos` se não houver linhas de diário). "
         'Pode omitir "sql" no JSON ou devolver só um SELECT complementar. '
-        'Formato: {"fontes": [...], "sql": null ou "SELECT ...", "mutacao": null ou "DELETE ..."}.'
+        'Formato: {"fontes": [...], "sql": null ou "SELECT ...", "mutacao": null ou "DELETE ..."}. '
+        "**Pedidos em linguagem natural** (ex.: «apague o aluno [NOME]») podem ser satisfeitos pelo servidor sem SQL; "
+        "mesmo assim pode devolver `DELETE` em `\"mutacao\"` se for a forma mais clara.\n\n"
+        + planner_suffix_gestao_mutation_permission_note()
     )
 
 
@@ -220,6 +231,7 @@ def render_login() -> None:
                         )
                         return
                     st.session_state.rotina_authenticated = True
+                    st.session_state.rotina_login_username = key.strip()
                     st.session_state.rotina_role = role
                     st.session_state.rotina_user_label = str(
                         rec.get("display_name") or key
@@ -238,6 +250,7 @@ def render_login() -> None:
                         st.session_state.rotina_parent_id_aluno = None
                     st.session_state.rotina_sidebar_screen = "assistant"
                     st.session_state.rotina_direct_chat_student = None
+                    reset_sleep_meal_report_ui_state()
                     st.session_state.messages = []
                     st.session_state.pop("_rotina_session_serial", None)
                     st.session_state.pop("_chat_disk_synced_for", None)
@@ -292,11 +305,13 @@ def render_auth_sidebar() -> None:
             _delete_browser_session_file(_ltok)
         _clear_browser_session_query_param()
         st.session_state.rotina_authenticated = False
+        st.session_state.rotina_login_username = ""
         st.session_state.rotina_role = None
         st.session_state.rotina_user_label = ""
         st.session_state.rotina_parent_id_aluno = None
         st.session_state.rotina_sidebar_screen = "assistant"
         st.session_state.rotina_direct_chat_student = None
+        reset_sleep_meal_report_ui_state()
         st.session_state.messages = []
         st.session_state.pop("_rotina_session_serial", None)
         st.session_state.pop("_chat_disk_synced_for", None)

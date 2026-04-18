@@ -226,6 +226,18 @@ def _apply_report_blob_from_disk(blob: Any) -> None:
         st.session_state.sleep_rep_nome_field = str(blob.get("nome_field") or "")
 
 
+def reset_sleep_meal_report_ui_state() -> None:
+    """
+    Limpa o estado do relatório sono/refeições na sessão Streamlit.
+    Usar na troca de utilizador ou quando o ficheiro do chat não traz blob `report`
+    (evita mostrar gráfico do aluno A após login do utilizador B).
+    """
+    st.session_state.sleep_rep_phase = "idle"
+    st.session_state.sleep_rep_query_name = ""
+    st.session_state.sleep_rep_resolved_label = ""
+    st.session_state.sleep_rep_nome_field = ""
+
+
 def _parse_session_file_payload(data: Any) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
     """Ficheiro legado: lista só de mensagens. Novo: `{\"messages\": [...], \"report\": {...}}`."""
     if isinstance(data, list):
@@ -249,6 +261,7 @@ def _rotina_session_serial_current() -> str:
     payload = {
         "messages": st.session_state.get("messages") or [],
         "report": _report_blob_for_disk(),
+        "owner": str(st.session_state.get("rotina_login_username") or ""),
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
@@ -261,12 +274,27 @@ def sync_rotina_chat_from_disk(chat_id: str) -> None:
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            owner_disk = ""
+            if isinstance(data, dict):
+                owner_disk = str(data.get("owner") or "").strip()
+            current = str(st.session_state.get("rotina_login_username") or "").strip()
             msgs, rep = _parse_session_file_payload(data)
+            # Evita reutilizar chat/relatório de outro utilizador no mesmo `rotina_chat` (URL partilhada ou legado sem `owner`).
+            if owner_disk and current and owner_disk != current:
+                msgs, rep = [], None
+            elif not owner_disk and current:
+                msgs, rep = [], None
             st.session_state.messages = msgs
             if rep is not None:
                 _apply_report_blob_from_disk(rep)
+            else:
+                reset_sleep_meal_report_ui_state()
         except (OSError, json.JSONDecodeError):
-            pass
+            st.session_state.messages = []
+            reset_sleep_meal_report_ui_state()
+    else:
+        st.session_state.messages = []
+        reset_sleep_meal_report_ui_state()
     st.session_state._chat_disk_synced_for = chat_id
     st.session_state._rotina_session_serial = _rotina_session_serial_current()
 
@@ -275,7 +303,11 @@ def persist_rotina_chat_to_disk(chat_id: str) -> None:
     """Grava conversa + relatório em `ROTINA_DATA_DIR/.rotina_chat/<uuid>.json`."""
     msgs: list[dict[str, str]] = st.session_state.get("messages") or []
     rep = _report_blob_for_disk()
-    payload = {"messages": msgs, "report": rep}
+    payload = {
+        "messages": msgs,
+        "report": rep,
+        "owner": str(st.session_state.get("rotina_login_username") or ""),
+    }
     serial = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     if st.session_state.get("_rotina_session_serial") == serial:
         return
@@ -344,25 +376,114 @@ def validate_sql(sql: str) -> bool:
     return banned.search(low) is None
 
 
+_ALLOWED_MUTATION_TABLES = frozenset({"info_alunos", "diario_estruturado"})
+
+
+def _normalize_sql_table_token(tok: str) -> str:
+    """Primeiro identificador de tabela após FROM/INTO/UPDATE: aspas, backticks, `main.tabela`."""
+    t = (tok or "").strip().lower().strip('`"[]')
+    if "." in t:
+        t = t.rsplit(".", 1)[-1]
+    return t
+
+
+def _mutation_allow_csv_tables_strict(low: str) -> bool:
+    """Padrão estrito (incl. CTE antes de DELETE)."""
+    _tbl = r"(?:[`\"]?)(info_alunos|diario_estruturado)(?:[`\"]?)"
+    return bool(
+        re.search(rf"\bdelete\s+from\s+{_tbl}\b", low, re.IGNORECASE)
+        or re.search(rf"\binsert\s+into\s+{_tbl}\b", low, re.IGNORECASE)
+        or re.search(rf"\bupdate\s+{_tbl}\b", low, re.IGNORECASE)
+    )
+
+
+def _mutation_allow_csv_tables_relaxed(low: str) -> bool:
+    """
+    Fallback: modelos costumam gerar `DELETE FROM "info_alunos"`, backticks, `schema.info_alunos`,
+    ou espaços extra — ainda é mutação só nas tabelas CSV permitidas.
+    """
+    if re.search(r"\bdelete\s+from\b", low, re.IGNORECASE):
+        m = re.search(r"\bdelete\s+from\s+(\S+)", low, re.IGNORECASE)
+        if m and _normalize_sql_table_token(m.group(1)) in _ALLOWED_MUTATION_TABLES:
+            return True
+    if re.search(r"\binsert\s+into\b", low, re.IGNORECASE):
+        m = re.search(r"\binsert\s+into\s+(\S+)", low, re.IGNORECASE)
+        if m and _normalize_sql_table_token(m.group(1)) in _ALLOWED_MUTATION_TABLES:
+            return True
+    if re.search(r"\bupdate\b", low, re.IGNORECASE):
+        m = re.search(r"\bupdate\s+(\S+)", low, re.IGNORECASE)
+        if m and _normalize_sql_table_token(m.group(1)) in _ALLOWED_MUTATION_TABLES:
+            return True
+    return False
+
+
+def _mutation_sql_has_top_level_semicolon(sql: str) -> bool:
+    """True se existir `;` fora de strings SQL com aspas simples (separador de instruções)."""
+    in_sq = False
+    i = 0
+    n = len(sql)
+    while i < n:
+        c = sql[i]
+        if c == "'":
+            if in_sq and i + 1 < n and sql[i + 1] == "'":
+                i += 2
+                continue
+            in_sq = not in_sq
+            i += 1
+            continue
+        if c == ";" and not in_sq:
+            return True
+        i += 1
+    return False
+
+
 def validate_mutation_sql(sql: str) -> bool:
     """Permite uma instrução INSERT/UPDATE/DELETE nas tabelas CSV (perfil gestão)."""
     if not sql or not isinstance(sql, str):
         return False
     t = sql.strip().rstrip(";")
-    if ";" in t:
+    if _mutation_sql_has_top_level_semicolon(t):
         return False
     low = t.lower()
-    if not any(low.startswith(p) for p in ("insert", "update", "delete")):
-        return False
+    # Não usar `\breplace\b`: coincide com `str_replace(...)` e com `OR REPLACE` em DuckDB.
     banned = re.compile(
-        r"\b(drop|alter|create|attach|detach|pragma|copy|call|truncate|replace|into\s+sqlite|from\s+sqlite)\b",
+        r"\b(drop|alter|create|attach|detach|pragma|copy|call|truncate|into\s+sqlite|from\s+sqlite)\b",
         re.IGNORECASE,
     )
     if banned.search(low):
         return False
-    if "diario_estruturado" not in low and "info_alunos" not in low:
+    if re.search(r"\binsert\s+or\s+replace\b", low, re.IGNORECASE):
         return False
-    return True
+    if re.search(r"\breplace\s+into\b", low, re.IGNORECASE):
+        return False
+    first_kw = re.match(r"^\s*(\w+)", low)
+    if first_kw and first_kw.group(1) == "select":
+        return False
+    if _mutation_allow_csv_tables_strict(low):
+        return True
+    if _mutation_allow_csv_tables_relaxed(low):
+        return True
+    return False
+
+
+def promote_plan_sql_mutation_field(plan: dict[str, Any]) -> dict[str, Any]:
+    """
+    Se o planeador colocou INSERT/UPDATE/DELETE em `sql` em vez de `mutacao`, move para `mutacao`
+    e limpa `sql`. Assim o DELETE deixa de ser tratado como SELECT em `run_safe_select` e é executado.
+    """
+    p = dict(plan)
+    sql = p.get("sql")
+    if not isinstance(sql, str):
+        return p
+    s = sql.strip()
+    if not s or not validate_mutation_sql(s):
+        return p
+    m = p.get("mutacao")
+    if isinstance(m, str) and m.strip() and validate_mutation_sql(m.strip()):
+        return p
+    p["mutacao"] = s
+    p["sql"] = None
+    return p
 
 
 def _resolve_info_alunos_csv(base: Path) -> Path:
@@ -404,6 +525,108 @@ def persist_duckdb_tables_to_csv(conn: duckdb.DuckDBPyConnection, data_dir: Path
     )
     _ensure_utf8_bom_csv(info_csv)
     _ensure_utf8_bom_csv(diario_csv)
+
+
+def persist_info_alunos_and_diario_via_pandas(
+    conn: duckdb.DuckDBPyConnection, data_dir: Path
+) -> None:
+    """
+    Grava o estado atual das tabelas `info_alunos` e `diario_estruturado` para CSV via pandas.
+    Usa escrita atómica (ficheiro .tmp + replace) para reduzir corrupção e erros "ficheiro em uso" no Windows.
+    `utf-8-sig` mantém BOM compatível com Excel (equivalente a `_ensure_utf8_bom_csv`).
+    """
+    data_dir = data_dir.resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    info_csv = _resolve_info_alunos_csv(data_dir)
+    diario_csv = data_dir / "diario_estruturado.csv"
+    df_i = conn.execute("SELECT * FROM info_alunos").fetchdf()
+    df_d = conn.execute("SELECT * FROM diario_estruturado").fetchdf()
+    enc = "utf-8-sig"
+
+    def _atomic_df_to_csv(df: pd.DataFrame, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        df.to_csv(str(tmp.resolve()), index=False, encoding=enc)
+        tmp.replace(path)
+
+    _atomic_df_to_csv(df_i, info_csv)
+    _atomic_df_to_csv(df_d, diario_csv)
+
+
+def delete_student(
+    conn: duckdb.DuckDBPyConnection,
+    id_aluno: int,
+    *,
+    data_dir: Path | None = None,
+) -> tuple[str, bool]:
+    """
+    Remove o aluno do cadastro e apaga no DuckDB todas as linhas do diário desse `id_aluno`.
+    Persiste `info_alunos.csv` e `diario_estruturado.csv` no disco (pandas), para garantir ficheiros físicos actualizados.
+    """
+    base = (data_dir or DATA_DIR).resolve()
+    try:
+        aid = int(id_aluno)
+    except (TypeError, ValueError):
+        return "id_aluno inválido.", False
+    if aid < 1:
+        return "id_aluno inválido.", False
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM info_alunos WHERE CAST(id_aluno AS INTEGER) = ?",
+            [aid],
+        ).fetchone()
+        if not row or int(row[0]) < 1:
+            return f"Não existe aluno com id_aluno={aid}.", False
+    except Exception:
+        return "Não foi possível verificar o cadastro.", False
+    try:
+        conn.execute(
+            "DELETE FROM diario_estruturado WHERE CAST(id_aluno AS INTEGER) = ?",
+            [aid],
+        )
+        conn.execute(
+            "DELETE FROM info_alunos WHERE CAST(id_aluno AS INTEGER) = ?",
+            [aid],
+        )
+        persist_info_alunos_and_diario_via_pandas(conn, base)
+        return (
+            f"Aluno **id_aluno={aid}** removido do cadastro; registos do diário desse aluno foram apagados. "
+            "CSVs actualizados em disco.",
+            True,
+        )
+    except Exception as e:
+        return f"Erro ao excluir ou gravar CSV: {e}", False
+
+
+def excluir_aluno_permanente(
+    id_aluno: int,
+    *,
+    data_dir: Path | None = None,
+) -> tuple[str, bool]:
+    """
+    Exclusão legítima em CSV local: lê `info_alunos.csv` com pandas, remove a linha do `id_aluno`
+    e grava de novo (o domínio em `modules.services` também remove linhas correspondentes no diário).
+    Só executa com perfil **Gestão** na sessão Streamlit.
+    """
+    if st.session_state.get("rotina_role") != "gestao":
+        return "Apenas o perfil **Gestão** pode excluir alunos permanentemente.", False
+    base = (data_dir or DATA_DIR).resolve()
+    from modules.services import excluir_registos_aluno_por_sobrescrita_csv
+
+    return excluir_registos_aluno_por_sobrescrita_csv(base, id_aluno)
+
+
+def delete_by_name(nome_aluno: str, *, data_dir: Path | None = None) -> tuple[str, bool]:
+    """
+    Remove do cadastro todas as linhas cuja coluna `nome` contém o texto indicado (pandas, sobrescrita do CSV).
+    Só executa com perfil **Gestão** na sessão Streamlit.
+    """
+    if st.session_state.get("rotina_role") != "gestao":
+        return "Apenas o perfil **Gestão** pode apagar por nome.", False
+    base = (data_dir or DATA_DIR).resolve()
+    from modules.services import remove_alunos_by_nome_contains_csv
+
+    return remove_alunos_by_nome_contains_csv(base, (nome_aluno or "").strip())
 
 
 def _extract_first_values_tuple(sql: str) -> str | None:
@@ -627,28 +850,36 @@ def _precheck_duplicate_info_alunos(
     return None
 
 
-def _format_mutation_persist_error(e: BaseException) -> str:
-    """Mensagem legível; destaca bloqueio por Excel/CSV aberto no Windows."""
+def _mensagem_csv_aberto_simples() -> str:
+    """Quando o CSV está bloqueado por outro programa (ex.: Excel)."""
+    return "O arquivo CSV está aberto. Feche-o e tente novamente."
+
+
+def _is_csv_escrita_bloqueada(e: BaseException) -> bool:
     raw = str(e)
     el = raw.lower()
-    if isinstance(e, PermissionError) or "permission denied" in el or "errno 13" in el:
-        return (
-            "Não foi possível **gravar** os CSV: permissão negada ou ficheiro bloqueado. "
-            "Se `info_alunos.csv` ou `diario_estruturado.csv` estiver aberto no **Excel** (ou outro programa), "
-            "**feche o ficheiro** e tente novamente. "
-            f"(Detalhe técnico: {raw})"
-        )
-    if (
-        "being used by another process" in el
+    if isinstance(e, PermissionError):
+        return True
+    errno = getattr(e, "errno", None)
+    if errno in (11, 13, 16, 32, 35):  # EAGAIN, EACCES, EBUSY, WinError 32, etc.
+        return True
+    if "winerror 32" in el or "[errno 13]" in el or "errno 13" in el:
+        return True
+    return bool(
+        "permission denied" in el
+        or "being used by another process" in el
         or "cannot access the file" in el
         or "another program" in el
-    ):
-        return (
-            "Não foi possível gravar os CSV: o ficheiro está **em uso** por outro programa. "
-            "Feche o Excel ou o editor que tiver o CSV aberto e tente de novo. "
-            f"(Detalhe: {raw})"
-        )
-    return f"Erro ao aplicar alteração: {raw}"
+        or "resource busy" in el
+        or "text file busy" in el
+    )
+
+
+def _format_mutation_persist_error(e: BaseException) -> str:
+    """Mensagem ao falhar persistência; CSV aberto → uma frase só."""
+    if _is_csv_escrita_bloqueada(e):
+        return _mensagem_csv_aberto_simples()
+    return f"Erro ao aplicar alteração: {e}"
 
 
 def _parse_insert_column_names_after_table(sql: str, table: str) -> list[str] | None:
@@ -757,7 +988,7 @@ def run_mutation_and_persist(
     allow_delete: bool = True,
 ) -> tuple[str, bool, str | None]:
     low = sql.strip().lower()
-    if not allow_delete and re.match(r"^\s*delete\b", low):
+    if not allow_delete and re.search(r"\bdelete\s+from\b", low):
         return (
             "DELETE não é permitido para este perfil: apenas **Gestão** pode apagar registos nos CSV.",
             False,
