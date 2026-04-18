@@ -73,15 +73,38 @@ SYSTEM_SQL_STRICT = """Dados tabulares (bloco "Dados tabulares" acima):
 - Para contar, listar ou comparar, use **apenas** o que está nas linhas mostradas (e o número da coluna "linha" se existir).
 - Se a pergunta pedir algo que a tabela não contém (coluna ausente), diga que o resultado atual não traz esse campo.
 - Se várias linhas tiverem o mesmo nome e turmas diferentes, isso vem do cadastro (homônimos ou duplicidade): cite `id_aluno` de cada linha e não assuma um único aluno sem explicar.
-- Esta tabela reflete a **pergunta atual**; não conclua pela omissão de nomes aqui que "não há dados" sobre alguém que o utilizador **não citou** nesta pergunta."""
+- Esta tabela reflete a **pergunta atual**; não conclua pela omissão de nomes aqui que "não há dados" sobre alguém que o utilizador **não citou** nesta pergunta.
+- **Resposta ao utilizador (obrigatório):** não transcreva a tabela inteira nem liste todos os alunos linha a linha — o utilizador já vê os dados na aplicação. Limite-se a **resumir** (ex.: total, ids relevantes, sim/não) em **poucas frases**; no máximo **3 exemplos** de linha se for indispensável."""
 
 ---
 
 ##   Estrutura do Projeto
 
-* `data/`: Contém os arquivos de entrada (ex: `diario_estruturado.csv`, `info_aluno.csv`).
-* `Dockerfile` & `docker-compose.yml`: Configurações para ambiente isolado e replicável.
-* `app.py`: Script principal para processamento e análise.
+O projeto segue uma arquitetura modular para garantir escalabilidade e facilitar a manutenção, separando a interface da lógica de negócio e persistência:
+
+`app.py`: Ponto de entrada (orquestrador) da aplicação.
+
+`core/`: Módulos fundamentais do sistema.
+
+`auth_manager.py`: Gerenciamento de sessões, login e níveis de acesso (RBAC).
+
+`database.py`: Camada de persistência e integração com DuckDB e sistemas de arquivos.
+
+`modules/`: Lógica de negócio e inteligência.
+
+`ai_engine.py`: Motor de IA (Gemini/OpenAI/Ollama) e processamento de áudio (Whisper).
+
+`services.py`: Regras de negócio para Chat Direto e Diário de Classe.
+
+`ui/:` Interface do usuário e componentes.
+
+`components.py`: Componentes visuais reutilizáveis e telas por perfil de usuário.
+
+`styles.py`: Definições de CSS customizado e identidade visual futurista.
+
+`data/`: Repositório de arquivos de entrada e persistência local (CSVs, JSONs).
+
+`Dockerfile` & `docker-compose.yml`: Configuração de infraestrutura para ambiente containerizado e replicável.
 
 ---
 
