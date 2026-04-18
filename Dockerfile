@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3" \
     && pip install -r requirements.txt
 
-COPY app.py .
+COPY app.py core/ modules/ ui/ ./
 
 EXPOSE 8501
 
