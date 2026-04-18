@@ -15,7 +15,6 @@ import chromadb
 import streamlit as st
 from dotenv import load_dotenv
 from pypdf import PdfReader
-from txtai.pipeline import Segmentation
 
 load_dotenv()
 
@@ -46,7 +45,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-CHROMA_DIR = Path(os.getenv("CHROMA_PERSIST_DIR", "data/chroma")).resolve()
+CHROMA_DIR = Path(os.getenv("CHROMA_PERSIST_DIR", "data/vector_db")).resolve()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 
@@ -72,13 +71,15 @@ if ROTINA_EMBED_PROVIDER in ("openrouter", "openai"):
             else "text-embedding-3-small"
         )
 
-# Limites de chunking / RAG (ajustáveis por env; defaults para indexação “completa”).
-CHUNK_CHAR_SIZE = _env_int("ROTINA_CHUNK_CHARS", 1000)
-CHUNK_CHAR_OVERLAP = _env_int("ROTINA_CHUNK_OVERLAP", 120)
-MAX_CHUNKS_PER_PDF = _env_int("ROTINA_MAX_CHUNKS_PER_PDF", 40)
-MAX_CHUNKS_TOTAL = _env_int("ROTINA_MAX_CHUNKS_TOTAL", 300)
+# Limites de chunking / RAG (ajustáveis por env). Chunking principal: RecursiveCharacterTextSplitter 1200/200.
+RAG_RECURSIVE_CHUNK_SIZE = _env_int("ROTINA_RAG_RECURSIVE_CHUNK", 1200)
+RAG_RECURSIVE_CHUNK_OVERLAP = _env_int("ROTINA_RAG_RECURSIVE_OVERLAP", 200)
+CHUNK_CHAR_SIZE = _env_int("ROTINA_CHUNK_CHARS", 1200)
+CHUNK_CHAR_OVERLAP = _env_int("ROTINA_CHUNK_OVERLAP", 200)
+MAX_CHUNKS_PER_PDF = _env_int("ROTINA_MAX_CHUNKS_PER_PDF", 100)
+MAX_CHUNKS_TOTAL = _env_int("ROTINA_MAX_CHUNKS_TOTAL", 500)
 CHROMA_ADD_BATCH = _env_int("ROTINA_CHROMA_ADD_BATCH", 4)
-RAG_TOP_K = _env_int("ROTINA_RAG_TOP_K", 6)
+RAG_TOP_K = _env_int("ROTINA_RAG_TOP_K", 3)
 # >0: corta trechos cuja distância ao embedding da pergunta excede (melhor_distância + gap).
 # Evita preencher K com PDFs pouco relacionados (ex.: cardápio em pergunta sobre nome da escola).
 ROTINA_RAG_DISTANCE_GAP = _env_float("ROTINA_RAG_DISTANCE_GAP", 0.28)
@@ -89,6 +90,18 @@ ROTINA_RAG_LEXICAL_WEIGHT = _env_float("ROTINA_RAG_LEXICAL_WEIGHT", 0.38)
 ROTINA_RAG_LEXICAL_FLOOR = _env_float("ROTINA_RAG_LEXICAL_FLOOR", 0.14)
 # Na indexação, prefixa trechos que parecem tabela para o embedding captar melhor “quadro/tabulação”.
 ROTINA_RAG_TABLE_EMBED_PREFIX = _env_bool("ROTINA_RAG_TABLE_EMBED_PREFIX", "1")
+
+# Incrementar quando a extração ou o marcador entre páginas mudar (força reindexação).
+RAG_PDF_EXTRACT_VERSION = 3
+
+# PPP: sumário até ~pág. 28 — não indexar (equivalente a PyPDFLoader.load()[28:]).
+PPP_PEDAGOGICO_PDF = "ppp_projeto_político_pedagógico.pdf"
+PPP_SKIP_FIRST_PAGES = 28
+
+# Linhas tipo sumário: título + pontinhos + número (remissão de página).
+_RAG_TOC_DOT_LEADER_LINE = re.compile(r"\.{3,}\s*\d{1,4}\s*$")
+# Entre páginas no texto extraído — usado como separador preferido no chunking recursivo.
+RAG_PDF_PAGE_SPLIT_MARKER = "\n\n<<<PAGE_SPLIT>>>\n\n"
 
 # Limites de taxa para API gratuita (OpenRouter / OpenAI): embeddings e HTTP.
 ROTINA_EMBED_API_BATCH_SIZE = _env_int("ROTINA_EMBED_API_BATCH_SIZE", 1)
@@ -123,12 +136,14 @@ _EMBED_INDEX_TOKEN = (
 
 # Muda o cache do Streamlit quando você alterar limites ou embeddings no .env
 INDEX_PROFILE = (
+    f"rcs={RAG_RECURSIVE_CHUNK_SIZE}|rco={RAG_RECURSIVE_CHUNK_OVERLAP}|"
     f"cs={CHUNK_CHAR_SIZE}|ov={CHUNK_CHAR_OVERLAP}|"
     f"pp={MAX_CHUNKS_PER_PDF}|tot={MAX_CHUNKS_TOTAL}|bat={CHROMA_ADD_BATCH}|"
     f"eab={effective_chroma_add_batch()}|emb_iv={ROTINA_API_EMBED_MIN_INTERVAL_SEC}|"
     f"pdfp={ROTINA_API_PAUSE_BETWEEN_PDF_SEC}|rdg={ROTINA_RAG_DISTANCE_GAP}|"
     f"rlw={ROTINA_RAG_LEXICAL_WEIGHT}|rlf={ROTINA_RAG_LEXICAL_FLOOR}|"
-    f"tpre={int(ROTINA_RAG_TABLE_EMBED_PREFIX)}|seg=txtai|{_EMBED_INDEX_TOKEN}"
+    f"tpre={int(ROTINA_RAG_TABLE_EMBED_PREFIX)}|seg=recursive|"
+    f"pexv={RAG_PDF_EXTRACT_VERSION}|{_EMBED_INDEX_TOKEN}"
 )
 
 
@@ -147,12 +162,14 @@ PDF_NAMES = (
     "planejamento_nutricional_semanal.pdf",
     "guia_procedimentos_saude_seguranca.pdf",
     "PPP_DED_IBC.pdf",
+    "ppp_projeto_político_pedagógico.pdf",
 )
 
 # RAG: perguntas de identidade institucional buscam só nestes PDFs (evita saúde/cardápio por menção genérica a “escola”).
 RAG_IDENTITY_SOURCES: tuple[str, ...] = (
     "regimento_interno_escola.pdf",
     "PPP_DED_IBC.pdf",
+    "ppp_projeto_político_pedagógico.pdf",
 )
 
 # RAG: café da manhã, lanche, cardápio, refeições — apenas o planejamento nutricional semanal.
@@ -170,7 +187,12 @@ def _rag_pdf_manifest_fingerprint(data_dir: Path) -> str:
             parts.append(f"{name}\t{p.stat().st_mtime_ns}")
         else:
             parts.append(f"{name}\tMISSING")
-    raw = "\n".join(parts) + "\n|pdf_names=" + "|".join(PDF_NAMES)
+    raw = (
+        "\n".join(parts)
+        + "\n|pdf_names="
+        + "|".join(PDF_NAMES)
+        + f"\n|pexv={RAG_PDF_EXTRACT_VERSION}|ppp_skip={PPP_SKIP_FIRST_PAGES}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -224,33 +246,51 @@ def _drop_rotina_chroma_collection(client: Any, name: str) -> None:
 # Utilitários
 # ---------------------------------------------------------------------------
 
-def extract_pdf_text(path: Path) -> str:
+def _line_is_toc_dot_leader(s: str) -> bool:
+    """True se a linha parece remissão de sumário (pontos + número final)."""
+    t = s.strip()
+    if len(t) < 6 or t.startswith("==="):
+        return False
+    return bool(_RAG_TOC_DOT_LEADER_LINE.search(t))
+
+
+def strip_toc_dot_leader_lines(text: str) -> str:
+    """Remove linhas com padrão 'título .... 29' (resíduos de sumário / rodapé)."""
+    if not text.strip():
+        return text
+    out_lines: list[str] = []
+    for line in text.splitlines():
+        if _line_is_toc_dot_leader(line):
+            continue
+        out_lines.append(line)
+    return "\n".join(out_lines).strip()
+
+
+def extract_pdf_text(path: Path, *, skip_first_pages: int = 0) -> str:
+    """
+    Extrai texto página a página com cabeçalho `=== PDF página N ===` e marcador
+    `RAG_PDF_PAGE_SPLIT_MARKER` entre páginas. `skip_first_pages` ignora as N
+    primeiras páginas do ficheiro (índices 0..N-1), equivalente a
+    `PyPDFLoader.load()[N:]`.
+    """
     reader = PdfReader(str(path))
+    skip = max(0, int(skip_first_pages))
+    page_list = reader.pages[skip:] if skip else reader.pages
     parts: list[str] = []
-    for page in reader.pages:
+    for j, page in enumerate(page_list):
+        physical_page = skip + j + 1
         try:
             t = page.extract_text() or ""
         except Exception:
             t = ""
-        if t.strip():
-            parts.append(t)
-    return "\n\n".join(parts)
-
-
-def flatten_segments(seg: Any) -> list[str]:
-    """Normaliza saída do txtai Segmentation para lista de strings."""
-    if isinstance(seg, str):
-        return [seg.strip()] if seg.strip() else []
-    if isinstance(seg, (list, tuple)):
-        out: list[str] = []
-        for item in seg:
-            out.extend(flatten_segments(item))
-        return out
-    return []
+        body = strip_toc_dot_leader_lines(t.strip())
+        if body:
+            parts.append(f"=== PDF página {physical_page} ===\n{body}")
+    return RAG_PDF_PAGE_SPLIT_MARKER.join(parts)
 
 
 def chunk_text_by_chars(text: str, size: int, overlap: int, max_chunks: int) -> list[str]:
-    """Chunking fixo por caracteres — reserva se a segmentação txtai não produzir trechos."""
+    """Chunking fixo por caracteres — reserva se o splitter recursivo não produzir trechos."""
     text = text.strip()
     if not text or max_chunks <= 0:
         return []
@@ -271,16 +311,48 @@ def chunk_text_by_chars(text: str, size: int, overlap: int, max_chunks: int) -> 
 
 
 def chunk_pdf_for_index(text: str, per_pdf_cap: int) -> list[str]:
-    """Segmenta com txtai (parágrafos); só cai no chunking por caracteres se não houver trechos."""
-    if not text.strip():
+    """
+    Fragmentação com RecursiveCharacterTextSplitter (economia de tokens vs. texto inteiro).
+    Tamanho e overlap por defeito 1200 / 200 (`ROTINA_RAG_RECURSIVE_*`).
+    """
+    if not text.strip() or per_pdf_cap <= 0:
         return []
-    segment = Segmentation(paragraphs=True, minlength=200, cleantext=True)
-    raw = segment(text)
-    chunks = [c for c in flatten_segments(raw) if len(c) >= 60]
-    chunks = chunks[:per_pdf_cap]
-    if chunks:
-        return chunks
-    return chunk_text_by_chars(text, CHUNK_CHAR_SIZE, CHUNK_CHAR_OVERLAP, per_pdf_cap)
+    size = max(200, int(RAG_RECURSIVE_CHUNK_SIZE))
+    overlap = max(0, min(int(RAG_RECURSIVE_CHUNK_OVERLAP), size // 2))
+    chunks: list[str] = []
+    try:
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=size,
+            chunk_overlap=overlap,
+            length_function=len,
+            separators=[
+                RAG_PDF_PAGE_SPLIT_MARKER,
+                "\n\n",
+                "\n",
+                ". ",
+                " ",
+                "",
+            ],
+        )
+        raw_chunks = splitter.split_text(text)
+        chunks: list[str] = []
+        for c in raw_chunks:
+            cleaned = strip_toc_dot_leader_lines(c.strip())
+            if len(cleaned) >= 40:
+                chunks.append(cleaned)
+    except Exception:
+        chunks = []
+    if not chunks:
+        raw_fb = chunk_text_by_chars(text, size, overlap, per_pdf_cap)
+        out_fb: list[str] = []
+        for c in raw_fb:
+            cleaned = strip_toc_dot_leader_lines(c.strip())
+            if len(cleaned) >= 40:
+                out_fb.append(cleaned)
+        return out_fb
+    return chunks[:per_pdf_cap]
 
 
 _RAG_STOPWORDS = frozenset(
@@ -570,10 +642,18 @@ def add_with_retry(
                 )
 
 
+def _purge_chroma_test_del_under_data_dir(data_dir: Path) -> None:
+    """Remove `data/_chroma_test_del/` antes da indexação (evita resíduos de testes)."""
+    p = (data_dir.resolve() / "_chroma_test_del")
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+
+
 def ingest_rotina_pdf_documents(
     collection: chromadb.Collection, data_dir: Path
 ) -> int:
     """Lê `PDF_NAMES`, segmenta, gera embeddings e grava na coleção `CHROMA_COLLECTION`."""
+    _purge_chroma_test_del_under_data_dir(data_dir)
     total_used = 0
     batch = effective_chroma_add_batch()
     for pdf_name in PDF_NAMES:
@@ -582,7 +662,8 @@ def ingest_rotina_pdf_documents(
         pdf_path = data_dir / pdf_name
         if not pdf_path.exists():
             continue
-        full_text = extract_pdf_text(pdf_path)
+        skip_pages = PPP_SKIP_FIRST_PAGES if pdf_name == PPP_PEDAGOGICO_PDF else 0
+        full_text = extract_pdf_text(pdf_path, skip_first_pages=skip_pages)
         cap = min(MAX_CHUNKS_PER_PDF, MAX_CHUNKS_TOTAL - total_used)
         chunks = chunk_pdf_for_index(full_text, cap)
         if not chunks:
@@ -599,6 +680,26 @@ def ingest_rotina_pdf_documents(
         if ROTINA_API_PAUSE_BETWEEN_PDF_SEC > 0:
             time.sleep(ROTINA_API_PAUSE_BETWEEN_PDF_SEC)
     return total_used
+
+
+def rag_will_run_full_document_ingest(persist_dir: Path, data_dir: Path) -> bool:
+    """
+    True se na próxima chamada a `get_chroma_collection` for necessário ingerir PDFs
+    (pasta vazia, coleção inexistente ou manifest de PDFs diferente do gravado).
+    """
+    persist_dir = persist_dir.resolve()
+    data_dir = data_dir.resolve()
+    fp_now = _rag_pdf_manifest_fingerprint(data_dir)
+    if _read_rag_stored_fingerprint(persist_dir) != fp_now:
+        return True
+    if not persist_dir.is_dir():
+        return True
+    try:
+        client = chromadb.PersistentClient(path=str(persist_dir))
+        col = client.get_collection(CHROMA_COLLECTION)
+        return int(col.count()) == 0
+    except Exception:
+        return True
 
 
 @st.cache_resource

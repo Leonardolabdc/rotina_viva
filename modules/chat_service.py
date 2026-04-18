@@ -208,6 +208,394 @@ def _should_force_structured_sources_no_rag(plan: dict[str, Any], user_message: 
     return _user_natural_language_cadastro_mutation_intent(user_message)
 
 
+_CONTINUATION_PRONOUN = re.compile(
+    r"(?is)\b("
+    r"ele|ela|"
+    r"esse\s+aluno|essa\s+aluna|"
+    r"o\s+mesmo|a\s+mesma|"
+    r"mesm[oa]\s+(?:aluno|aluna|criança|crianca|menin[oa])"
+    r")\b"
+)
+
+
+_NAME_STOP_TOKENS = frozenset(
+    {
+        "tem",
+        "têm",
+        "tém",
+        "é",
+        "e",
+        "alergia",
+        "alergias",
+        "intolerância",
+        "intolerancia",
+        "turma",
+        "turmas",
+        "nome",
+        "cadastro",
+        "está",
+        "esta",
+        "com",
+        "sem",
+        "qual",
+        "quais",
+        "sobre",
+        "segundo",
+    }
+)
+
+
+def _trim_aluno_name_tokens(raw: str) -> str:
+    """Corta em 'tem alergia', 'esta', etc., para não poluir o ILIKE."""
+    parts = [p for p in raw.replace("?", " ").split() if p]
+    out: list[str] = []
+    for p in parts:
+        wd = p.strip(".,;:!?").lower()
+        if wd in _NAME_STOP_TOKENS:
+            break
+        out.append(p.strip(".,;:!?"))
+    return " ".join(out).strip()
+
+
+def _extract_aluno_names_from_chat_blob(blob: str) -> list[str]:
+    """Extrai fragmentos de nome citados como «aluno X Y» ou variantes (ordem cronológica aproximada)."""
+    found: list[str] = []
+    for m in re.finditer(
+        r"(?is)\b(?:aluno|aluna)\s+([^\n?!]{3,72})",
+        blob,
+    ):
+        name = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(m.group(1)))
+        if len(name) >= 5 and name.lower() not in ("rotina viva", "nome da escola"):
+            found.append(name.title() if name.islower() else name)
+    out: list[str] = []
+    seen: set[str] = set()
+    for n in found:
+        key = n.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(n)
+    return out
+
+
+def augment_cadastro_question_with_history(
+    user_text: str,
+    history: list[dict[str, str]],
+    *,
+    parent_scope: tuple[int, str] | None = None,
+) -> str:
+    """
+    Reforça a pergunta enviada ao planeador com o nome do aluno quando for continuação
+    (ele/ela, qual turma…) e o nome só apareceu antes no chat — evita `sql: null` e perda de contexto.
+    """
+    ut = (user_text or "").strip()
+    if not ut:
+        return ut
+    low = ut.lower()
+    if re.search(r"(?is)\baluno\s+\S+\s+\S+", ut):
+        return ut
+    if "«" in ut and "»" in ut:
+        return ut
+    blob = "\n".join(
+        (m.get("content") or "")
+        for m in history[-12:]
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+    )
+    short_follow = len(ut) < 140
+    turma_alerg = ("turma" in low or "alerg" in low or "alérg" in low or "alegic" in low)
+    diario_hint = bool(
+        re.search(
+            r"(?i)\b(sono|refei|almo[cç]|lanche|café|cafe|jantar|comeu|dormiu|evacua|"
+            r"banheiro|trocas|medicament|recado|atividade|intera[cç]|di[aá]rio|"
+            r"rotina|hoje|ontem|semana)\b",
+            ut,
+        )
+    )
+    continuation = bool(_CONTINUATION_PRONOUN.search(ut)) or (
+        short_follow and turma_alerg and re.search(r"(?i)\bqual\b", low)
+    )
+    continuation = continuation or (short_follow and diario_hint)
+    if not continuation:
+        return ut
+    names = _extract_aluno_names_from_chat_blob(blob)
+    if names:
+        chosen = names[-1]
+        return (
+            f"{ut}\n\n[Contexto da conversa: continuação sobre o/a aluno/a «{chosen}». "
+            "Use esse nome em `nome ILIKE` em `JOIN info_alunos` com `diario_estruturado`, "
+            "ou só em `info_alunos` se for cadastro.]"
+        )
+    if parent_scope is not None:
+        _aid, nome = parent_scope
+        nome = (nome or "").strip()
+        if nome and nome not in ("—", "?", ""):
+            return (
+                f"{ut}\n\n[Contexto da conversa: continuação sobre o aluno vinculado «{nome}» "
+                f"(id_aluno={int(_aid)}). Use `d.id_aluno = {int(_aid)}` ou `nome ILIKE` com JOIN.]"
+            )
+    return ut
+
+
+_DIARIO_READ_KEYWORDS = re.compile(
+    r"(?i)\b(refei|c[eê]fe|café|almo[cç]|lanche|jantar|"
+    r"sono|dormiu|evacua|banheiro|trocas|medicament|recado|atividade|intera[cç]|"
+    r"di[aá]rio(\s+estruturado)?|rotina|comeu|anotou|registou|ontem|hoje|semana|"
+    r"últim|ultim|m[eê]s|periodo|período|filho|filha|"
+    r"como\s+foi\s+o\s+dia|foi\s+o\s+dia|\bdia\s+(?:de|do|da)\b|\bo\s+dia\b)\b",
+)
+
+
+def _sql_week_anchor_filter_by_name_tokens(tokens: list[str]) -> str:
+    """
+    Últimos ~25 dias de diário **a partir da data mais recente desse aluno na base**,
+    não a partir do relógio do servidor (evita zero linhas quando o CSV é de outro mês).
+    """
+    esc_ax = []
+    for t in tokens[:4]:
+        safe = t.replace("'", "''")
+        esc_ax.append(f"ax.nome ILIKE '%{safe}%'")
+    inner = " AND ".join(esc_ax)
+    return (
+        "AND try_cast(d.data AS DATE) >= ("
+        "SELECT coalesce(max(try_cast(dx.data AS DATE)), CURRENT_DATE) - INTERVAL 25 DAY "
+        "FROM diario_estruturado AS dx JOIN info_alunos AS ax ON dx.id_aluno = ax.id_aluno "
+        f"WHERE {inner})"
+    )
+
+
+def _sql_week_anchor_filter_by_id_aluno(aid: int) -> str:
+    return (
+        "AND try_cast(d.data AS DATE) >= ("
+        "SELECT coalesce(max(try_cast(dx.data AS DATE)), CURRENT_DATE) - INTERVAL 25 DAY "
+        f"FROM diario_estruturado AS dx WHERE dx.id_aluno = {int(aid)})"
+    )
+
+
+def _diario_question_wants_week_range(um: str) -> bool:
+    """Perguntas tipo 'como foi a semana' → vários dias, não só o último registo."""
+    low = um.lower()
+    return bool(
+        re.search(
+            r"(?i)\b(semana|últim\w*\s+dias|ultim\w*\s+dias|últim\w*\s+semana|"
+            r"ultim\w*\s+semana|nesta\s+semana|esta\s+semana|nos\s+últimos|"
+            r"nos\s+ultimos|7\s+dias|sete\s+dias)\b",
+            um,
+        )
+        or ("semana" in low and re.search(r"(?i)\b(como|foi|resumo|rotina)\b", um))
+    )
+
+
+def _strip_dates_from_student_name_fragment(s: str) -> str:
+    """
+    Remove datas coladas ao nome (ex.: «Ana Souza 2026-04-15» ou «Ana Souza 15/04/2026»),
+    para não gerar `ILIKE '%2026%'` nem fragmentos inválidos.
+    """
+    t = (s or "").strip()
+    if not t:
+        return t
+    t = re.sub(r"(?i)\s+(?:no\s+dia|na\s+data|em|dia)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{4}\s*$", "", t)
+    t = re.sub(r"(?i)\s+(?:no\s+dia|na\s+data|em)\s+\d{4}-\d{2}-\d{2}\s*$", "", t)
+    t = re.sub(r"\s+\d{4}-\d{2}-\d{2}\s*$", "", t)
+    t = re.sub(r"\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{4}\s*$", "", t)
+    return t.strip()
+
+
+def _parse_diary_date_filter_sql(um: str) -> str | None:
+    """
+    Devolve cláusula SQL `AND ...` para um dia específico.
+    Datas `DD/MM/AAAA` ou `DD-MM-AAAA` tratadas como **dia/mês/ano (PT-BR)**.
+    Também reconhece `AAAA-MM-DD` na pergunta.
+    """
+    m_iso = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", um)
+    if m_iso:
+        y, mo, d = m_iso.group(1), m_iso.group(2), m_iso.group(3)
+        lit = f"{y}-{mo}-{d}"
+        return f"AND d.data = '{lit}'"
+    m_br = re.search(r"\b(\d{1,2})[/.](\d{1,2})[/.](\d{4})\b", um)
+    if m_br:
+        day, month, year = int(m_br.group(1)), int(m_br.group(2)), int(m_br.group(3))
+        if 1 <= day <= 31 and 1 <= month <= 12:
+            lit = f"{year:04d}-{month:02d}-{day:02d}"
+            return f"AND d.data = '{lit}'"
+    return None
+
+
+def _extract_student_name_for_infer_sql(um: str) -> str | None:
+    """Nome do aluno a partir da pergunta (incl. bloco «…» do augment)."""
+    for pat in (
+        r'["""]([^"""]{3,50})["""]',
+        r"[“”]([^“”]{3,50})[“”]",
+        r"\bmeu\s+filho\s+['\"]?([A-Za-zÀ-ÿ][^\n'\"?!]{2,45})",
+        r"\bminha\s+filha\s+['\"]?([A-Za-zÀ-ÿ][^\n'\"?!]{2,45})",
+    ):
+        mq = re.search(pat, um, re.IGNORECASE)
+        if mq:
+            cand = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(mq.group(1).strip()))
+            if len(cand) >= 4:
+                return cand
+    m_ctx = re.search(r"«([^»]{3,80})»", um)
+    if m_ctx:
+        raw = m_ctx.group(1).strip()
+        if re.match(r"(?i)^id_aluno\s*=", raw):
+            return None
+        name = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(raw))
+        if len(name) >= 4:
+            return name
+    name: str | None = None
+    ma = re.search(
+        r"(?is)\b(?:aluno|aluna)\s+(.+?)(?:\?|$|\n)",
+        um,
+    )
+    if ma:
+        name = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(ma.group(1)))
+    if not name:
+        parts_caps = re.findall(
+            r"\b([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+)+)\b",
+            um,
+        )
+        block = {
+            "Qual Turma",
+            "Rotina Viva",
+            "Ensino Fundamental",
+            "Educação Infantil",
+        }
+        for cand in reversed(parts_caps):
+            if cand in block or len(cand) < 6:
+                continue
+            if re.search(r"\d{4}", cand):
+                continue
+            name = cand
+            break
+    if not name:
+        return None
+    name = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(name))
+    if len(name) < 4:
+        return None
+    return name
+
+
+def infer_structured_select_sql(user_message: str) -> str | None:
+    """
+    SELECT de recurso quando o planeador devolve `sql` vazio: `info_alunos` e/ou
+    `diario_estruturado` + JOIN, conforme palavras-chave da pergunta.
+    """
+    um = (user_message or "").strip()
+    if not um:
+        return None
+    wants_diario = bool(_DIARIO_READ_KEYWORDS.search(um))
+    wants_cadastro = bool(
+        re.search(
+            r"(?i)\b(turma|alerg|alérg|alegic|cadastro|aluno|aluna|contato|telefone|id_aluno)\b",
+            um,
+        )
+    )
+    if not wants_diario and not wants_cadastro:
+        return None
+    id_m = re.search(
+        r"(?i)\bid_aluno\s*=\s*(\d+)\b",
+        um,
+    ) or re.search(r"(?i)\bid_aluno\D{0,12}(\d+)\b", um)
+    name = _extract_student_name_for_infer_sql(um)
+    diary_cols = (
+        "d.id_registro, d.id_aluno, d.data, d.cafe_manha, d.almoco, d.lanche_tarde, d.jantar_extra, "
+        "d.qualidade_sono, d.atividade_dia, d.interacao_social, d.recado_professora, "
+        "d.evacuacao, d.trocas_banheiro, d.medicamentos, a.nome"
+    )
+    date_clause = _parse_diary_date_filter_sql(um)
+    week_range = _diario_question_wants_week_range(um)
+    if week_range:
+        diary_limit = 120
+        order_diary = "d.data ASC, d.id_registro ASC"
+    else:
+        order_diary = "d.data ASC, d.id_registro ASC"
+        diary_limit = 50 if date_clause else 120
+
+    if wants_diario:
+        if id_m:
+            aid = int(id_m.group(1))
+            parts = [
+                f"SELECT {diary_cols} FROM diario_estruturado d",
+                "JOIN info_alunos a ON d.id_aluno = a.id_aluno",
+                f"WHERE d.id_aluno = {aid}",
+            ]
+            if date_clause:
+                parts.append(date_clause.strip())
+            elif week_range:
+                parts.append(_sql_week_anchor_filter_by_id_aluno(aid))
+            parts.append(f"ORDER BY {order_diary} LIMIT {diary_limit}")
+            return " ".join(parts)
+        if name:
+            tokens = [t for t in re.split(r"\s+", name.strip()) if len(t) >= 2]
+            if tokens:
+                esc = []
+                for t in tokens[:4]:
+                    safe = t.replace("'", "''")
+                    esc.append(f"a.nome ILIKE '%{safe}%'")
+                where = " AND ".join(esc)
+                parts = [
+                    f"SELECT {diary_cols} FROM diario_estruturado d",
+                    "JOIN info_alunos a ON d.id_aluno = a.id_aluno",
+                    f"WHERE {where}",
+                ]
+                if date_clause:
+                    parts.append(date_clause)
+                elif week_range:
+                    parts.append(_sql_week_anchor_filter_by_name_tokens(tokens))
+                parts.append(f"ORDER BY {order_diary} LIMIT {diary_limit}")
+                return " ".join(parts)
+        if not wants_cadastro:
+            return None
+    if not name:
+        return None
+    tokens = [t for t in re.split(r"\s+", name.strip()) if len(t) >= 2]
+    if not tokens:
+        return None
+    esc = []
+    for t in tokens[:4]:
+        safe = t.replace("'", "''")
+        esc.append(f"nome ILIKE '%{safe}%'")
+    where = " AND ".join(esc)
+    return (
+        "SELECT id_aluno, nome, turma, alergias, contato_pais FROM info_alunos "
+        f"WHERE {where} ORDER BY id_aluno LIMIT 25"
+    )
+
+
+def infer_info_alunos_select_sql(user_message: str) -> str | None:
+    """Compatível com chamadas antigas — delega em `infer_structured_select_sql`."""
+    return infer_structured_select_sql(user_message)
+
+
+def apply_infer_sql_to_plan(plan: dict[str, Any] | None, planning_user_text: str) -> dict[str, Any]:
+    """
+    Força o SELECT inferido quando a pergunta é claramente sobre aluno + cadastro/diário.
+    O planeador LLM por vezes gera SQL que não devolve linhas ou ignora o JOIN correto.
+    """
+    p = dict(plan) if isinstance(plan, dict) else {}
+    mut = p.get("mutacao")
+    if isinstance(mut, str) and mut.strip():
+        return p
+    inf = infer_structured_select_sql(planning_user_text)
+    if not inf:
+        return p
+    p["sql"] = inf
+    raw_f = p.get("fontes") or []
+    fontes: list[str] = []
+    if isinstance(raw_f, str):
+        fontes = [raw_f.lower().strip()] if raw_f.lower().strip() in ("rag", "sql") else []
+    elif isinstance(raw_f, list):
+        for x in raw_f:
+            if isinstance(x, str) and x.lower().strip() in ("rag", "sql"):
+                fontes.append(x.lower().strip())
+    fontes = [f for f in fontes if f != "rag"]
+    if "sql" not in fontes:
+        fontes.append("sql")
+    if not fontes:
+        fontes = ["sql"]
+    p["fontes"] = fontes
+    return p
+
+
 def normalize_plan(plan: dict[str, Any] | None, user_message: str) -> dict[str, Any]:
     """
     Corrige planos inconsistentes do modelo pequeno (ex.: fontes só \"sql\" com sql null).
@@ -230,18 +618,26 @@ def normalize_plan(plan: dict[str, Any] | None, user_message: str) -> dict[str, 
     seen: set[str] = set()
     fontes = [f for f in fontes if not (f in seen or seen.add(f))]
 
+    um = user_message.strip()
+    ul = um.lower()
+
     sql_val = p.get("sql")
     sql_str = sql_val.strip() if isinstance(sql_val, str) else ""
     has_sql = bool(sql_str)
+
+    inferred = infer_structured_select_sql(um)
+    if inferred and not has_sql:
+        p["sql"] = inferred
+        sql_str = inferred
+        has_sql = True
+        if "sql" not in fontes:
+            fontes.append("sql")
 
     if "sql" in fontes and not has_sql:
         fontes = [f for f in fontes if f != "sql"]
         p["sql"] = None
         if "rag" not in fontes:
             fontes.append("rag")
-
-    um = user_message.strip()
-    ul = um.lower()
     if INSTITUTIONAL_SCOPE_RE.search(um) or (
         "nome" in ul
         and "escola" in ul

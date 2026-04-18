@@ -50,8 +50,10 @@ from modules.chat_service import (
     _student_label_for_chat,
     _user_requests_student_delete,
     try_gestao_delete_by_name_intent,
+    apply_infer_sql_to_plan,
     apply_parent_sql_scope,
     apply_user_data_source_mode,
+    augment_cadastro_question_with_history,
     augment_question_for_parent_rag,
     build_mutation_direct_reply,
     normalize_plan,
@@ -60,7 +62,6 @@ from modules.rag_index import (
     CHROMA_DIR,
     INDEX_PROFILE,
     ROTINA_API_PLAN_TO_CHAT_DELAY_SEC,
-    RAG_TOP_K,
     get_chroma_collection,
     reset_rotina_chroma_persist,
     retrieve_rag_context_and_chunks,
@@ -739,17 +740,23 @@ def render_rotina_chat(
                                 "Aviso: **ChromaDB / PDFs** indisponível — se a pergunta depender de documentos, "
                                 "a parte de PDF fica vazia; **cadastro e diário (CSV)** continuam a funcionar."
                             )
+                        planning_user_text = augment_cadastro_question_with_history(
+                            user_text,
+                            history_for_model,
+                            parent_scope=parent_scope,
+                        )
                         plan = normalize_plan(
                             ai_engine.llm_plan_sources(
-                                user_text,
+                                planning_user_text,
                                 force=plan_force,
                                 history=history_for_model,
                                 extra_planner_suffix=planner_extra,
                             ),
-                            user_text,
+                            planning_user_text,
                         )
                         plan = apply_user_data_source_mode(plan, mode_ds)
                         plan = promote_plan_sql_mutation_field(plan)
+                        plan = apply_infer_sql_to_plan(plan, planning_user_text)
                         if read_only_db:
                             plan["mutacao"] = None
                         fontes = plan.get("fontes") or ["rag"]
@@ -912,7 +919,7 @@ def render_rotina_chat(
                         if "rag" in fontes and collection is not None:
                             proc.write(_processing_status_rag_line(user_text))
                             rag_block, _rag_chunks = retrieve_rag_context_and_chunks(
-                                collection, rag_question, k=RAG_TOP_K
+                                collection, rag_question, k=ai_engine.rag_context_chunks_top_k()
                             )
                             st.session_state.last_rag_chunks = _rag_chunks
                             st.session_state.last_rag_question = user_text

@@ -1,6 +1,6 @@
 """
 Rotina Viva — assistente para rotinas em escolas infantis (AI Factory / PUCPR).
-Streamlit + DuckDB (CSVs) + ChromaDB (RAG) + txtai (segmentação) + LLM/embeddings (API ou Ollama local).
+Streamlit + DuckDB (CSVs) + ChromaDB (RAG) + LLM/embeddings (API ou Ollama local).
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.auth_manager import render_login, try_restore_rotina_browser_session
+from core.database import DATA_DIR
+from modules.rag_index import CHROMA_DIR, INDEX_PROFILE, get_chroma_collection, rag_will_run_full_document_ingest
 from ui.components import init_session_state, render_educador, render_familia, render_gestao
 from ui.styles import apply_styles
 
@@ -27,6 +29,11 @@ def main() -> None:
     if not st.session_state.get("rotina_authenticated"):
         render_login()
         return
+    if rag_will_run_full_document_ingest(CHROMA_DIR, DATA_DIR):
+        with st.spinner(
+            "Processando documento extenso (300+ páginas)... Isso será feito apenas uma vez."
+        ):
+            get_chroma_collection(str(CHROMA_DIR), str(DATA_DIR), INDEX_PROFILE)
     role = st.session_state.get("rotina_role")
     if role == "gestao":
         render_gestao()

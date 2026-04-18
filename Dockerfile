@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
-# Streamlit + DuckDB + ChromaDB + txtai — PyTorch CPU (menos GB que pacotes NVIDIA no C:)
+# Streamlit + DuckDB + ChromaDB + RAG (langchain-text-splitters) — PyTorch CPU (menos GB que pacotes NVIDIA no C:)
 FROM python:3.12-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH=/app \
     ROTINA_DATA_DIR=/data \
-    CHROMA_PERSIST_DIR=/data/chroma
+    CHROMA_PERSIST_DIR=/data/vector_db
 
 WORKDIR /app
 

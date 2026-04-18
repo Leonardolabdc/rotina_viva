@@ -36,6 +36,8 @@ data/chroma/
 data/.rotina_chat/
 data/rotina_users.json
 data/_chroma_test_del/
+data/vector_db/
+data/.rotina_browser_sessions/
 storage/
 
 # Docker

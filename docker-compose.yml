@@ -46,7 +46,7 @@ services:
       - .env
     environment:
       ROTINA_DATA_DIR: /data
-      CHROMA_PERSIST_DIR: /data/chroma
+      CHROMA_PERSIST_DIR: /data/vector_db
       OPENAI_TRANSCRIBE_BASE_URL: http://whisper:9000/v1
       OPENAI_TRANSCRIBE_MODEL: whisper-1
     volumes:

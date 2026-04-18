@@ -146,7 +146,8 @@ def system_grounding() -> str:
 - Priorize fatos que estejam escritos nos trechos ou na tabela.
 - Só diga que uma informação não aparece se, depois de verificar o contexto, ela de fato não estiver lá.
 - Para perguntas sobre identidade da escola, procure linhas como nome fantasia, cabeçalho, "Escola ..." ou campo "Título:" nos documentos.
-- Responda ao que a **pergunta atual** pede. Não acrescente observações sobre nomes ou assuntos que só surgiram em **mensagens anteriores** do chat: o bloco de contexto desta rodada costuma estar filtrado à pergunta de agora, e a ausência de um nome nesse bloco **não** autoriza dizer "não há informações sobre [fulano]" se o utilizador **não perguntou** por essa pessoa nesta mensagem."""
+- **Continuação sobre o mesmo aluno:** nas mensagens anteriores deste chat pode ter ficado explícito **qual criança** (nome citado pelo utilizador ou pela assistente). Se a pergunta atual for curta (“qual a turma?”, “e a alergia?”) e o bloco tabular **desta** rodada já trouxer linhas desse aluno, responda em função dessas linhas — **não** diga que “não há dados” sobre o aluno só porque o nome não voltou a ser escrito na pergunta de agora.
+- Responda ao que a **pergunta atual** pede; evite desviar para assuntos antigos que não interessam a esta mensagem."""
 
 
 def system_sql_strict() -> str:
@@ -157,8 +158,9 @@ def system_sql_strict() -> str:
 - Para contar, listar ou comparar, use **apenas** o que está nas linhas mostradas (e o número da coluna "linha" se existir).
 - Se a pergunta pedir algo que a tabela não contém (coluna ausente), diga que o resultado atual não traz esse campo.
 - Se várias linhas tiverem o mesmo nome e turmas diferentes, isso vem do cadastro (homônimos ou duplicidade): cite `id_aluno` de cada linha e não assuma um único aluno sem explicar.
-- Esta tabela reflete a **pergunta atual**; não conclua pela omissão de nomes aqui que "não há dados" sobre alguém que o utilizador **não citou** nesta pergunta.
-- **Resposta ao utilizador (obrigatório):** não transcreva a tabela inteira nem liste todos os alunos linha a linha — o utilizador já vê os dados na aplicação. Limite-se a **resumir** (ex.: total, ids relevantes, sim/não) em **poucas frases**; no máximo **3 exemplos** de linha se for indispensável."""
+- Esta tabela reflete a **consulta desta rodada** (muitas vezes já filtrada pelo aluno em continuação de conversa). Se existir **uma linha** com nome/turma coerentes com o que o utilizador perguntou (incluindo continuações sobre o mesmo aluno), responda com base nela.
+- **Diário (`id_registro`, colunas de refeições/sono):** se o bloco mostrar **várias linhas** com **datas diferentes** (vários `id_registro`), o utilizador quer o **período** — faça um **resumo por dia** (ou por `id_registro`), usando **todas** as linhas devolvidas; **não** escolha só a última nem ignore `id_registro` mais antigos. Só use “um exemplo” se a consulta devolveu **uma única** linha.
+- **Resposta ao utilizador:** não transcreva a tabela inteira de alunos genéricos; para **diário multi-dia**, pode listar **brevemente cada dia** (frase curta por dia). Para cadastro simples (turma/alergia), **resuma** em poucas frases."""
 
 
 def system_mutation_applied() -> str:
@@ -256,6 +258,12 @@ Tabelas DuckDB (consultas em `"sql"`: use SELECT; alterações em `"mutacao"`: I
 
 Para juntar aluno e diário (ex.: refeições de um aluno por nome):
    `FROM diario_estruturado d JOIN info_alunos a ON d.id_aluno = a.id_aluno WHERE a.nome ILIKE '%...%'`
+   **Leitura (SELECT) do diário — regras importantes:**
+   - O utilizador **não precisa** de dizer `id_aluno`: basta o **nome** entre aspas, “meu filho Nome”, ou `nome ILIKE` com JOIN como acima.
+   - Se disser `id_aluno`, aceite variantes: `id_aluno = 4`, `id_aluno 4`, `com id_aluno 4`, `id aluno 4`.
+   - **“Como foi a semana / últimos dias”:** devolva **várias linhas** (uma por `data` / `id_registro`), com `ORDER BY d.data ASC` e filtro de datas (ex.: últimos 7 dias com `CAST(d.data AS DATE)`). **Proibido** `LIMIT 1` ou escolher só o registo mais recente se a pergunta for claramente sobre **período**.
+   - **Dia específico:** datas `DD/MM/AAAA` na pergunta são **dia/mês/ano (Brasil)** → converta para `d.data = 'AAAA-MM-DD'` (a coluna `data` no CSV costuma estar em **ISO `YYYY-MM-DD`**).
+   - Pergunta **“como foi o dia …”** sem data explícita: use **`CURRENT_DATE`** na coluna `data` (mesmo formato ISO em string).
 """
 
 
@@ -312,6 +320,24 @@ def school_name_reinforcement(user_message: str, rag_block: str) -> str | None:
     )
 
 
+def rag_context_includes_pdf_excerpts(rag_block: str) -> bool:
+    """True se o bloco RAG trouxe trechos indexados (não só aviso de vazio)."""
+    s = (rag_block or "").strip()
+    if len(s) < 30:
+        return False
+    low_start = s[:220].lower()
+    if low_start.startswith("(nenhum") or low_start.startswith("(sem trechos"):
+        return False
+    return "[fonte:" in s.lower()
+
+
+def system_rag_verbatim_snippet() -> str:
+    return """Trechos de documentos institucionais (bloco acima):
+- Se existir texto substantivo após a linha `[Fonte: …]`, inclua na resposta **pelo menos uma citação literal curta** (no máximo **duas frases**) do trecho **mais relevante** para a pergunta, entre **aspas**, e cite o **nome do ficheiro** da fonte entre parênteses a seguir.
+- Não substitua isso por só “o documento diz que…” sem mostrar as palavras do trecho; a citação curta dá **prova** ao utilizador sem repetir o PDF inteiro.
+- **Páginas e números:** só mencione número de **página do PDF** quando no trecho existir explicitamente uma linha `=== PDF página N ===` (N é a página). **Não** trate como “página” números isolados ao fim de títulos ou listas (muitas vezes vêm do **índice/sumário** ou de remissões na extração do PDF, não da paginação real). **Não** associe um ano escolar ou secção a um número **só porque** aparecem na mesma linha ou perto no trecho fragmentado — se o trecho for só títulos sem conteúdo programático, diga que o excerto é um sumário e que o detalhe não consta nesse trecho."""
+
+
 def duck_block_has_tabular_rows(duck_block: str) -> bool:
     s = (duck_block or "").strip()
     if not s:
@@ -337,7 +363,7 @@ def chat_stream_temperature(duck_block: str) -> float:
 
 
 def _format_history_for_planner(
-    history: Iterable[dict[str, str]], max_messages: int = 8
+    history: Iterable[dict[str, str]], max_messages: int = 12
 ) -> str:
     rows = [
         m
@@ -351,8 +377,8 @@ def _format_history_for_planner(
     for m in tail:
         label = "usuário" if m["role"] == "user" else "assistente"
         text = (m["content"] or "").strip()
-        if len(text) > 1200:
-            text = text[:1200] + "…"
+        if len(text) > 1800:
+            text = text[:1800] + "…"
         lines.append(f"[{label}]: {text}")
     return (
         "Conversa recente (use para resolver pronomes e continuações — ex.: de quem é “ele/ela”, "
@@ -375,8 +401,9 @@ def build_routing_planner_prompt(
 
 Regras (siga com cuidado):
 - "rag": documentos oficiais — regimento, normas, PPP, proposta pedagógica, segurança/saúde **institucional** (protocolos gerais da escola), cardápio/nutrição em documento, horários gerais da escola, **nome da escola / identidade institucional / endereço / missão** quando estiver em texto oficial.
-- "sql": **cadastro ou diário** — turma de aluno, **alergias cadastradas por aluno** (`info_alunos.alergias`: não use só RAG por ser “saúde”), criança específica, refeições do dia no diário, sono, evacuação, medicamentos **anotados no diário**, recado da professora, listagens/contagens nas tabelas CSV.
+- "sql": **cadastro ou diário** — turma de aluno, **alergias cadastradas por aluno** (`info_alunos.alergias`: não use só RAG por ser “saúde”), criança específica, **refeições do dia, sono, evacuação, medicamentos, recado ou atividades** anotados no **`diario_estruturado`** (use `SELECT` com `JOIN info_alunos` pelo nome ou `WHERE id_aluno = …`). Perguntas tipo “o que comeu / dormiu / evacuação / recado **hoje ou ontem**” → **sempre** `diario_estruturado` (SQL), **não** RAG nem só `info_alunos`.
 - **Continuação de conversa:** se a pergunta atual usar só pronomes (“ele”, “ela”, “meu filho”) ou não repetir o nome, use a **conversa recente** para saber **qual criança** e monte o SQL com `WHERE nome ILIKE '%...%'` em `info_alunos` (ou `id_aluno` se tiver sido citado). Não deixe de filtrar pelo aluno quando a pergunta for claramente sobre a mesma criança do turno anterior.
+- Se a mensagem trouxer `[Contexto da conversa: … «NOME» …]` ou `id_aluno=N`, trate isso como o aluno em causa e **inclua no SQL** (ILIKE em `a.nome` com `JOIN` ao diário, ou `WHERE id_aluno = N` em `diario_estruturado`).
 - **Não** use "sql" para "qual é o nome da escola?" — isso é "rag" (documentos).
 - Use ambos ["rag","sql"] só se a pergunta claramente precisar de documento oficial **e** de linhas do diário/cadastro.
 - **Criar, apagar ou alterar aluno / cadastro (`info_alunos`) ou linha de diário (`diario_estruturado`):** use **apenas** `["sql"]` em "fontes" — **não** inclua "rag" (PDFs não são a fonte de mutações nos CSV).
@@ -398,6 +425,7 @@ MODO **somente dados estruturados** (sidebar: só DuckDB / CSV — sem PDFs nest
 - Perguntas do tipo “qual é a turma do [nome]?” → **obrigatoriamente** filtre `info_alunos` por `nome` (ex.: `WHERE nome ILIKE '%primeiro%ultimo%'`).
   **Não** use só `SELECT DISTINCT turma` ou listar turmas sem JOIN/WHERE no nome — isso não identifica o aluno.
 - Perguntas sobre **alergia / intolerância / restrição alimentar de um aluno** (ou “quem tem alergia a X”) → `SELECT nome, turma, alergias FROM info_alunos` com `WHERE` em `nome` e/ou `alergias` (coluna **`alergias`**). Não devolva `sql: null` só porque a palavra parece “saúde”.
+- **Diário (`diario_estruturado`):** refeições, sono, evacuação, recado, “como foi a **semana**”, “últimos dias”, “o dia **DD/MM/AAAA**” → `SELECT` com `JOIN info_alunos` por **nome** (`ILIKE`) ou `id_aluno`. Aceite `id_aluno = N`, `id_aluno N` ou `com id_aluno N`. Para **semana/período**, devolva **várias linhas** (`ORDER BY d.data`) — **não** use `LIMIT 1` nem só o `id_registro` mais recente.
 - Se a pergunta **não puder** ser respondida com essas tabelas (ex.: regulamento, PPP, texto de PDF), retorne {"fontes": [], "sql": null, "mutacao": null}. **Não** use "rag".
 """
     elif force == "rag_only":
@@ -521,6 +549,8 @@ def ollama_chat_stream(
         messages.append({"role": "system", "content": extra_system.strip()})
     if duck_block_has_tabular_rows(duck_block):
         messages.append({"role": "system", "content": system_sql_strict()})
+    if rag_context_includes_pdf_excerpts(rag_block):
+        messages.append({"role": "system", "content": system_rag_verbatim_snippet()})
     messages.append({"role": "system", "content": ctx})
     sn = school_name_reinforcement(user_message, rag_block)
     if sn:
@@ -647,6 +677,8 @@ def openai_chat_stream(
         messages.append({"role": "system", "content": extra_system.strip()})
     if duck_block_has_tabular_rows(duck_block):
         messages.append({"role": "system", "content": system_sql_strict()})
+    if rag_context_includes_pdf_excerpts(rag_block):
+        messages.append({"role": "system", "content": system_rag_verbatim_snippet()})
     messages.append({"role": "system", "content": ctx})
     sn = school_name_reinforcement(user_message, rag_block)
     if sn:
@@ -973,3 +1005,13 @@ def processar_resposta_chat_stream(
 ) -> Generator[str, None, None]:
     """Alias legível: streaming da resposta do assistente (Ollama ou API OpenAI-compatível)."""
     yield from llm_chat_stream(user_message, duck_block, rag_block, history, extra_system)
+
+
+def rag_context_chunks_top_k() -> int:
+    """
+    Quantidade de trechos (chunks) do Chroma a incluir no prompt por pergunta.
+    Definido por `ROTINA_RAG_TOP_K` em `modules.rag_index` (default 3 — contexto curto, menos tokens).
+    """
+    from modules import rag_index
+
+    return rag_index.RAG_TOP_K
