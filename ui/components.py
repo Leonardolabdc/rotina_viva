@@ -61,7 +61,7 @@ from modules.rag_index import (
     get_chroma_collection,
     retrieve_rag_context_and_chunks,
 )
-from modules.report_service import (
+from modules.services import (
     ROTINA_SONO_FAIXA_LIMITE_1,
     ROTINA_SONO_FAIXA_LIMITE_2,
     ROTINA_SONO_MAX_MIN,
