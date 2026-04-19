@@ -2,6 +2,10 @@
 
 > **Status do Projeto:** 🛠️ Em desenvolvimento (Etapa 1 - CBL)
 
+[![Assista ao vídeo de apresentação](assets/demo_rotina_viva.gif)](https://youtu.be/3QAkjsPqgK4)
+
+*Clique no GIF acima para ver a apresentação completa com áudio no YouTube.*
+
 O **Rotina Viva** é um assistente inteligente projetado para ser a ponte digital entre a escola e os pais. Ele utiliza Inteligência Artificial para transformar a montanha de dados burocráticos de uma escola infantil em informações úteis e acessíveis.
 
 ---
