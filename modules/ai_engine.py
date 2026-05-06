@@ -234,6 +234,7 @@ Tabelas DuckDB (consultas em `"sql"`: use SELECT; alterações em `"mutacao"`: I
 2) diario_estruturado
    **Diário ≠ novo aluno:** pedidos do tipo “registar / anotar / lançar no **diário**”, “refeição do dia”, “sono hoje”
    → **INSERT ou UPDATE em `diario_estruturado`** com o `id_aluno` **já existente** (use `SELECT id_aluno FROM info_alunos WHERE nome ILIKE …` só para obter o id).
+   **Sub‑SELECT escalar:** em mutações, `(SELECT id_aluno FROM info_alunos WHERE …)` **tem** de devolver **uma** linha — acrescente sempre `ORDER BY id_aluno LIMIT 1` (ou use o `id_aluno` inteiro explícito). Sem `LIMIT 1`, o DuckDB falha se houver homónimos ou várias correspondências.
    **Não** faça `INSERT INTO info_alunos` para anotar refeições ou rotina diária — isso é cadastro de criança nova.
    **Data:** se o utilizador **não** indicar dia, use **`CURRENT_DATE`** (ou `CAST(CURRENT_DATE AS VARCHAR)`) na coluna `data`. Formato preferido na mutação: `'YYYY-MM-DD'` (ex.: `'2026-04-17'`).
    **Horas de sono:** se não forem mencionadas, use **`''`** (string vazia) em `hora_sono_inicio` e `hora_sono_fim` — não invente horários.
@@ -654,6 +655,162 @@ def openai_plan_sources(
         return json.loads(raw)
     except Exception:
         return {"fontes": ["rag"], "sql": None}
+
+
+_EMOTION_TRANSLATE_MAX_LINES = 40
+_EMOTION_TRANSLATE_MAX_CHARS_PER_LINE = 800
+
+
+def _trim_lines_for_emotion_translate(lines: list[str]) -> list[str]:
+    out: list[str] = []
+    for raw in lines[:_EMOTION_TRANSLATE_MAX_LINES]:
+        s = (raw or "").strip()
+        if len(s) > _EMOTION_TRANSLATE_MAX_CHARS_PER_LINE:
+            s = s[:_EMOTION_TRANSLATE_MAX_CHARS_PER_LINE] + "…"
+        out.append(s)
+    return out
+
+
+def _parse_translation_json_array(raw: str, n: int) -> list[str] | None:
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    arr = obj.get("lines")
+    if not isinstance(arr, list):
+        return None
+    out: list[str] = []
+    for i in range(n):
+        if i >= len(arr):
+            return None
+        cell = arr[i]
+        if not isinstance(cell, str):
+            return None
+        t = cell.strip()
+        if not t:
+            return None
+        out.append(t)
+    if len(arr) != n:
+        return None
+    return out
+
+
+def openai_translate_plain_lines_to_english(lines: list[str]) -> list[str] | None:
+    """Uma chamada curta à API: traduz cada linha para inglês (mesma ordem)."""
+    if not lines or not OPENAI_API_KEY:
+        return None
+    n = len(lines)
+    block = "\n".join(f"{i + 1}. {ln}" for i, ln in enumerate(lines))
+    sys_msg = (
+        "You translate short user phrases to English for emotion classification. "
+        "If a line is already English, return it unchanged (only fix obvious typos). "
+        "Preserve emotional meaning. **Every output string must be entirely in English** "
+        "(no Portuguese, Spanish, or other language left in the line). "
+        "Output **only** valid JSON with exactly one key, "
+        '"lines": an array of strings, same length and order as the input numbered list.'
+    )
+    messages = [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": f"Numbered phrases ({n} lines):\n{block}"},
+    ]
+    url = f"{OPENAI_BASE_URL}/chat/completions"
+    base: dict[str, Any] = {
+        "model": OPENAI_CHAT_MODEL,
+        "messages": messages,
+        "temperature": 0.15,
+        "max_tokens": min(4096, 120 + n * 120),
+    }
+    try:
+        r: httpx.Response | None = None
+        use_json_format = True
+        for attempt in range(ROTINA_API_HTTP_MAX_RETRIES):
+            work = {
+                **base,
+                **(
+                    {"response_format": {"type": "json_object"}}
+                    if use_json_format
+                    else {}
+                ),
+            }
+            r = httpx.post(url, headers=_openai_headers(), json=work, timeout=90.0)
+            if r.status_code == 429 and attempt < ROTINA_API_HTTP_MAX_RETRIES - 1:
+                time.sleep(_httpx_retry_after_seconds(r, attempt))
+                continue
+            if r.status_code == 400 and use_json_format:
+                use_json_format = False
+                continue
+            break
+        if r is None or not r.is_success:
+            return None
+        data = r.json()
+        raw = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+        return _parse_translation_json_array(raw, n)
+    except Exception:
+        return None
+
+
+def ollama_translate_plain_lines_to_english(lines: list[str]) -> list[str] | None:
+    if not lines:
+        return None
+    n = len(lines)
+    block = "\n".join(f"{i + 1}. {ln}" for i, ln in enumerate(lines))
+    sys_msg = (
+        "You translate short user phrases to English for emotion classification. "
+        "If a line is already English, return it unchanged. "
+        "Preserve emotional meaning. Every output string must be entirely in English. "
+        "Output only valid JSON: "
+        '{"lines": ["...", ...]} with the same number of strings as input, same order.'
+    )
+    payload = {
+        "model": OLLAMA_CHAT_MODEL,
+        "messages": [
+            {"role": "system", "content": sys_msg},
+            {"role": "user", "content": f"Numbered phrases ({n} lines):\n{block}"},
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.15},
+    }
+    try:
+        r = httpx.post(
+            f"{OLLAMA_HOST}/api/chat",
+            json=payload,
+            timeout=_llm_plan_timeout(),
+        )
+        r.raise_for_status()
+        data = r.json()
+        raw = (data.get("message") or {}).get("content") or ""
+        return _parse_translation_json_array(raw, n)
+    except Exception:
+        return None
+
+
+def llm_translate_plain_lines_to_english(
+    lines: list[str],
+) -> tuple[list[str] | None, str | None]:
+    """
+    Traduz linhas para inglês (mesma ordem) usando o mesmo provider do chat.
+
+    Devolve ``(None, aviso_pt)`` em falha; ``(linhas, None)`` em sucesso.
+    """
+    trimmed = _trim_lines_for_emotion_translate(lines)
+    if not trimmed:
+        return None, "Lista vazia após preparação."
+    if len(trimmed) != len(lines):
+        return None, "Demasiadas linhas (máximo interno excedido)."
+
+    if use_openai_compatible_chat():
+        out = openai_translate_plain_lines_to_english(trimmed)
+    else:
+        out = ollama_translate_plain_lines_to_english(trimmed)
+
+    if out is None:
+        return (
+            None,
+            "A tradução automática para inglês falhou (rede, modelo ou JSON inválido). "
+            "Pode repetir ou escrever em inglês.",
+        )
+    return out, None
 
 
 def openai_chat_stream(

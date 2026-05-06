@@ -37,6 +37,7 @@ data/.rotina_chat/
 data/rotina_users.json
 data/_chroma_test_del/
 data/vector_db/
+data/ml_models/*.pkl
 data/.rotina_browser_sessions/
 storage/
 

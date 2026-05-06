@@ -278,6 +278,10 @@ def render_auth_sidebar() -> None:
     with _left:
         if st.button("IA", key="rotina_sidebar_assistente_btn", help="Abrir Assistente IA"):
             st.session_state.rotina_sidebar_screen = "assistant"
+            if "rotina_assistant_view_choice" in st.session_state:
+                st.session_state.rotina_assistant_view_choice = st.session_state.get(
+                    "data_source_mode", "auto"
+                )
             st.rerun()
     with _right:
         _direct_btn_label = (
@@ -315,6 +319,8 @@ def render_auth_sidebar() -> None:
         st.session_state.messages = []
         st.session_state.pop("_rotina_session_serial", None)
         st.session_state.pop("_chat_disk_synced_for", None)
+        st.session_state.pop("_rotina_emotion_ml_bundle", None)
+        st.session_state.pop("_rotina_ml_last_trials", None)
         st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
         st.rerun()
     st.divider()

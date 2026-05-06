@@ -43,6 +43,7 @@ from core.database import (
     _duckdb_csv_reload_token,
 )
 from modules import ai_engine
+from modules import ml_emotion_chat
 from modules.chat_service import (
     _processing_status_rag_line,
     _processing_status_sql_line,
@@ -397,6 +398,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("rotina_sidebar_screen", "assistant")
     st.session_state.setdefault("rotina_direct_chat_student", None)
     st.session_state.setdefault("rotina_login_username", "")
+    st.session_state.setdefault("rotina_predictive_ml", False)
 
 def pin_chat_footer_row() -> None:
     """Fixa a linha com st.chat_input no rodapé e alinha à largura da área principal."""
@@ -480,6 +482,17 @@ def render_rag_sidebar_body(body: Any) -> None:
                     st.text(txt)
 
 
+def _rotina_workspace_radio_changed() -> None:
+    """Gestão/educador: 4.ª opção abre o laboratório ML; as outras mantêm o chat e a fonte de dados."""
+    v = st.session_state.get("rotina_assistant_view_choice")
+    if v == "ml_traditional":
+        st.session_state.rotina_sidebar_screen = "ml_traditional"
+    else:
+        st.session_state.rotina_sidebar_screen = "assistant"
+        if v in ("auto", "structured", "documents"):
+            st.session_state.data_source_mode = v
+
+
 def render_chat_sidebar_internals() -> Any:
     """Controlos de fonte + limpar conversa + placeholder dos trechos RAG."""
     st.subheader("Fonte da resposta")
@@ -490,23 +503,54 @@ def render_chat_sidebar_internals() -> Any:
     )
     _vals = [m[0] for m in _mode_choices]
     _labels = {m[0]: m[1] for m in _mode_choices}
-    cur = st.session_state.data_source_mode
-    if cur not in _vals:
-        cur = "auto"
-        st.session_state.data_source_mode = cur
-    sel = st.radio(
-        "O que usar nesta sessão",
-        options=_vals,
-        index=_vals.index(cur),
-        format_func=lambda v: _labels[str(v)],
-    )
-    st.session_state.data_source_mode = str(sel)
-    if str(sel) == "documents":
-        st.caption(
-            "Pedidos para **gravar** cadastro ou diário (CSV) continuam possíveis: "
-            "descreva no chat o que quer inserir ou alterar. "
-            "Para consultar só tabelas, prefira **Só dados estruturados** ou **Automático**."
+    role_lc = str(st.session_state.get("rotina_role") or "").strip().lower()
+
+    if role_lc in ("gestao", "educador"):
+        _staff_opts = ("auto", "structured", "documents", "ml_traditional")
+        _staff_labels = {
+            **_labels,
+            "ml_traditional": "ML clássico (laboratório FLAML — treino e exportar .pkl)",
+        }
+        if "rotina_assistant_view_choice" not in st.session_state:
+            st.session_state.rotina_assistant_view_choice = st.session_state.get(
+                "data_source_mode", "auto"
+            )
+        _svc = st.session_state.rotina_assistant_view_choice
+        if _svc not in _staff_opts:
+            st.session_state.rotina_assistant_view_choice = st.session_state.get(
+                "data_source_mode", "auto"
+            )
+        st.radio(
+            "O que usar nesta sessão",
+            options=list(_staff_opts),
+            key="rotina_assistant_view_choice",
+            on_change=_rotina_workspace_radio_changed,
+            format_func=lambda v: _staff_labels[str(v)],
         )
+        if str(st.session_state.get("rotina_assistant_view_choice")) == "documents":
+            st.caption(
+                "Pedidos para **gravar** cadastro ou diário (CSV) continuam possíveis: "
+                "descreva no chat o que quer inserir ou alterar. "
+                "Para consultar só tabelas, prefira **Só dados estruturados** ou **Automático**."
+            )
+    else:
+        cur = st.session_state.data_source_mode
+        if cur not in _vals:
+            cur = "auto"
+            st.session_state.data_source_mode = cur
+        sel = st.radio(
+            "O que usar nesta sessão",
+            options=_vals,
+            index=_vals.index(cur),
+            format_func=lambda v: _labels[str(v)],
+        )
+        st.session_state.data_source_mode = str(sel)
+        if str(sel) == "documents":
+            st.caption(
+                "Pedidos para **gravar** cadastro ou diário (CSV) continuam possíveis: "
+                "descreva no chat o que quer inserir ou alterar. "
+                "Para consultar só tabelas, prefira **Só dados estruturados** ou **Automático**."
+            )
     if st.button("Limpar conversa", key="rotina_clear_chat_btn"):
         _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
         if _old_cid and _is_safe_chat_session_id(_old_cid):
@@ -517,6 +561,7 @@ def render_chat_sidebar_internals() -> Any:
         st.session_state.messages = []
         st.session_state.last_rag_chunks = []
         st.session_state.last_rag_question = ""
+        st.session_state.rotina_predictive_ml = False
         st.session_state.pop("rotina_voice_preview_bytes", None)
         st.session_state.rotina_voice_hash = ""
         st.session_state.pop("rotina_voice_unlock_mic_after_reply", None)
@@ -549,6 +594,17 @@ def _render_rotina_logo_header() -> None:
                 f"Logo não encontrada: `{_logo_path.name}`. "
                 "Coloque o arquivo em `ROTINA_DATA_DIR` (ex.: pasta `data/`)."
             )
+
+
+def _rotina_append_user_chat_message(content: str) -> None:
+    """Guarda o estado do interruptor «IA preditiva» no momento do envio (evita desincronizar com o Streamlit)."""
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": content,
+            "predictive_ml": bool(st.session_state.get("rotina_predictive_ml")),
+        }
+    )
 
 
 def render_rotina_chat(
@@ -595,9 +651,41 @@ def render_rotina_chat(
     _gutter_l, _center_wrap, _gutter_r = st.columns([1, 2.2, 1], gap="small")
     _voice_blob = None
     with _center_wrap:
-        _icol, _vcol = st.columns([5, 1], gap="small")
+        _pred_col, _icol, _vcol = st.columns([1.45, 4.55, 1], gap="small")
+        with _pred_col:
+            _p_on = bool(st.session_state.get("rotina_predictive_ml"))
+            if _p_on:
+                st.markdown(
+                    '<div style="background:linear-gradient(145deg,#2e7d32,#1b5e20);color:#fff;'
+                    "padding:9px 6px;border-radius:10px;font-size:12px;font-weight:700;text-align:center;"
+                    'line-height:1.3;box-shadow:0 1px 4px rgba(0,0,0,.18);">IA preditiva<br/>'
+                    '<span style="font-weight:600;font-size:11px;opacity:.95">ligada</span></div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<div style="background:linear-gradient(145deg,#6d4c41,#4e342e);color:#efebe9;'
+                    "padding:9px 6px;border-radius:10px;font-size:12px;font-weight:700;text-align:center;"
+                    'line-height:1.3;box-shadow:0 1px 4px rgba(0,0,0,.12);">IA preditiva<br/>'
+                    '<span style="font-weight:600;font-size:11px;opacity:.92">desligada</span></div>',
+                    unsafe_allow_html=True,
+                )
+            st.toggle(
+                "IA preditiva",
+                key="rotina_predictive_ml",
+                help=(
+                    "Ligado: **cada mensagem** é tratada como classificação de emoções (ML) até desligar; "
+                    "não grava no diário/cadastro sem pedido explícito na mensagem. Desligado: chat normal."
+                ),
+                label_visibility="collapsed",
+            )
         with _icol:
-            prompt = st.chat_input("Pergunte sobre rotinas, alunos ou documentos da escola…")
+            _chat_ph = (
+                "Frases para classificar com ML (modo ligado). Desligue o interruptor ao terminar."
+                if bool(st.session_state.get("rotina_predictive_ml"))
+                else "Pergunte sobre rotinas, alunos ou documentos da escola…"
+            )
+            prompt = st.chat_input(_chat_ph)
         with _vcol:
             _voice_preview = st.session_state.get("rotina_voice_preview_bytes")
             if _voice_preview is not None:
@@ -620,6 +708,7 @@ def render_rotina_chat(
                 st.caption("Atualize o Streamlit (≥ 1.40) para gravar por voz.")
 
     pin_chat_footer_row()
+    st.caption(ml_emotion_chat.emotion_command_help_caption())
 
     if _voice_blob is not None:
         _raw = _voice_blob.getvalue()
@@ -633,7 +722,7 @@ def render_rotina_chat(
                 if _vtxt:
                     st.session_state.rotina_voice_preview_bytes = _raw
                     st.session_state.rotina_voice_hash = _vh
-                    st.session_state.messages.append({"role": "user", "content": _vtxt})
+                    _rotina_append_user_chat_message(_vtxt)
                     st.session_state.rotina_voice_unlock_mic_after_reply = True
                     persist_rotina_chat_to_disk(chat_id)
                 else:
@@ -667,12 +756,14 @@ def render_rotina_chat(
         st.session_state.rotina_voice_input_key = (
             int(st.session_state.get("rotina_voice_input_key", 0)) + 1
         )
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        _rotina_append_user_chat_message(prompt)
         persist_rotina_chat_to_disk(chat_id)
         st.rerun()
 
     if _last_is_user:
-        user_text = _msgs[-1]["content"]
+        _last_user_msg = _msgs[-1]
+        user_text = _last_user_msg["content"]
+        _pred_ml = bool(_last_user_msg.get("predictive_ml"))
         mode_ds = st.session_state.data_source_mode
 
         if conn is None:
@@ -725,6 +816,10 @@ def render_rotina_chat(
                     render_rag_sidebar_body(rag_sidebar_body)
                     return
 
+                ml_addon = ml_emotion_chat.build_emotion_ml_llm_addon(
+                    user_text, DATA_DIR, predictive_session=_pred_ml
+                )
+
                 plan_force: str | None = None
                 if mode_ds == "structured":
                     plan_force = "sql_only"
@@ -735,6 +830,11 @@ def render_rotina_chat(
                 with progress_ui.container():
                     with st.status("Processando sua pergunta…", expanded=True) as proc:
                         proc.write("Analisando a pergunta e planejando consultas…")
+                        if "```csv" in ml_addon:
+                            proc.write(
+                                "Modelo ML (emoções): inferência local concluída "
+                                "(resultados vão para o contexto do assistente)."
+                            )
                         if collection is None and mode_ds in ("auto", "documents"):
                             proc.write(
                                 "Aviso: **ChromaDB / PDFs** indisponível — se a pergunta depender de documentos, "
@@ -757,6 +857,18 @@ def render_rotina_chat(
                         plan = apply_user_data_source_mode(plan, mode_ds)
                         plan = promote_plan_sql_mutation_field(plan)
                         plan = apply_infer_sql_to_plan(plan, planning_user_text)
+                        if ml_emotion_chat.chat_round_suppress_csv_mutations(
+                            user_text, predictive_session=_pred_ml
+                        ):
+                            plan = dict(plan)
+                            plan["mutacao"] = None
+                            _strip_sql = plan.get("sql")
+                            if (
+                                isinstance(_strip_sql, str)
+                                and _strip_sql.strip()
+                                and validate_mutation_sql(_strip_sql.strip())
+                            ):
+                                plan["sql"] = None
                         if read_only_db:
                             plan["mutacao"] = None
                         fontes = plan.get("fontes") or ["rag"]
@@ -938,6 +1050,10 @@ def render_rotina_chat(
                             time.sleep(ROTINA_API_PLAN_TO_CHAT_DELAY_SEC)
 
                 _extra_chat = (chat_extra_system or "").strip()
+                if ml_addon.strip():
+                    _extra_chat = (
+                        (_extra_chat + "\n\n") if _extra_chat else ""
+                    ) + ml_addon.strip()
                 if mutation_ok:
                     _extra_chat = (
                         (_extra_chat + "\n\n") if _extra_chat else ""
@@ -1037,6 +1153,13 @@ def _render_gestao_ou_educador(
             if _screen == "assistant"
             else st.empty()
         )
+
+    if _screen == "ml_traditional":
+        from ui.ml_traditional_page import render_ml_traditional_page
+
+        _render_rotina_logo_header()
+        render_ml_traditional_page()
+        return
 
     try:
         conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))
@@ -1154,6 +1277,11 @@ def render_familia() -> None:
             if _screen == "assistant"
             else st.empty()
         )
+
+    if _screen == "ml_traditional":
+        st.session_state.rotina_sidebar_screen = "assistant"
+        st.warning("O laboratório ML clássico está disponível apenas para gestão e educadores.")
+        st.rerun()
 
     try:
         conn = get_duckdb_connection(str(DATA_DIR), _duckdb_csv_reload_token(DATA_DIR))

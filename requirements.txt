@@ -9,3 +9,7 @@ pypdf>=4.0,<6
 httpx>=0.27,<1
 openai>=1.0,<2
 SpeechRecognition>=3.10,<4
+flaml[automl]>=2.1,<3
+datasets>=2.16,<4
+scikit-learn>=1.3,<2
+deep-translator>=1.11,<2

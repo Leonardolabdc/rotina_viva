@@ -177,15 +177,19 @@ def load_rotina_users() -> dict[str, Any]:
         return {}
 
 
-def _coerce_stored_chat_messages_list(data: list[Any]) -> list[dict[str, str]] | None:
-    out: list[dict[str, str]] = []
+def _coerce_stored_chat_messages_list(data: list[Any]) -> list[dict[str, Any]] | None:
+    out: list[dict[str, Any]] = []
     for m in data:
         if not isinstance(m, dict):
             return None
         role, content = m.get("role"), m.get("content")
         if role not in ("user", "assistant") or not isinstance(content, str):
             return None
-        out.append({"role": str(role), "content": content})
+        item: dict[str, Any] = {"role": str(role), "content": content}
+        pm = m.get("predictive_ml")
+        if isinstance(pm, bool):
+            item["predictive_ml"] = pm
+        out.append(item)
     return out
 
 
@@ -238,7 +242,7 @@ def reset_sleep_meal_report_ui_state() -> None:
     st.session_state.sleep_rep_nome_field = ""
 
 
-def _parse_session_file_payload(data: Any) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
+def _parse_session_file_payload(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Ficheiro legado: lista só de mensagens. Novo: `{\"messages\": [...], \"report\": {...}}`."""
     if isinstance(data, list):
         parsed = _coerce_stored_chat_messages_list(data)
@@ -301,7 +305,7 @@ def sync_rotina_chat_from_disk(chat_id: str) -> None:
 
 def persist_rotina_chat_to_disk(chat_id: str) -> None:
     """Grava conversa + relatório em `ROTINA_DATA_DIR/.rotina_chat/<uuid>.json`."""
-    msgs: list[dict[str, str]] = st.session_state.get("messages") or []
+    msgs: list[dict[str, Any]] = st.session_state.get("messages") or []
     rep = _report_blob_for_disk()
     payload = {
         "messages": msgs,
@@ -879,6 +883,12 @@ def _format_mutation_persist_error(e: BaseException) -> str:
     """Mensagem ao falhar persistência; CSV aberto → uma frase só."""
     if _is_csv_escrita_bloqueada(e):
         return _mensagem_csv_aberto_simples()
+    raw = str(e)
+    if "More than one row returned by a subquery" in raw:
+        return (
+            "Não foi possível gravar: o SQL usou um **nome ambíguo** (a parte interna devolveu mais do que "
+            "um `id_aluno`). Indique o **id_aluno** certo ou um nome mais completo e peça de novo a gravação."
+        )
     return f"Erro ao aplicar alteração: {e}"
 
 
