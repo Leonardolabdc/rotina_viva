@@ -627,6 +627,29 @@ def openai_plan_sources(
         "messages": messages,
         "temperature": 0.1,
     }
+
+    lf_cast = [{"role": str(m["role"]), "content": str(m["content"])} for m in messages]
+
+    def _observe_plan(*, raw_str: str | None, exc: BaseException | None) -> None:
+        try:
+            from modules.langfuse_rotina import (
+                langfuse_integration_enabled,
+                observe_openai_generation,
+            )
+
+            if not langfuse_integration_enabled():
+                return
+            observe_openai_generation(
+                name="streamlit-plan-sources-json",
+                model=str(OPENAI_CHAT_MODEL),
+                messages=lf_cast,
+                model_parameters={"temperature": 0.1},
+                output=raw_str if exc is None else "{}",
+                err=exc,
+            )
+        except ImportError:
+            pass
+
     try:
         r: httpx.Response | None = None
         use_json_format = True
@@ -652,8 +675,11 @@ def openai_plan_sources(
         r.raise_for_status()
         data = r.json()
         raw = (data.get("choices") or [{}])[0].get("message", {}).get("content") or "{}"
-        return json.loads(raw)
-    except Exception:
+        out = json.loads(raw)
+        _observe_plan(raw_str=raw, exc=None)
+        return out
+    except Exception as e:
+        _observe_plan(raw_str=None, exc=e)
         return {"fontes": ["rag"], "sql": None}
 
 
@@ -813,45 +839,12 @@ def llm_translate_plain_lines_to_english(
     return out, None
 
 
-def openai_chat_stream(
-    user_message: str,
-    duck_block: str,
-    rag_block: str,
-    history: Iterable[dict[str, str]],
-    extra_system: str | None = None,
+def _openai_chat_stream_http_chunks(
+    *,
+    messages: list[dict[str, str]],
+    url: str,
+    body: dict[str, Any],
 ) -> Generator[str, None, None]:
-    ctx = f"""## Dados tabulares (consultas internas)
-{duck_block}
-
-## Trechos de documentos institucionais
-{rag_block}
-"""
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_persona()},
-        {"role": "system", "content": system_grounding()},
-    ]
-    if extra_system and extra_system.strip():
-        messages.append({"role": "system", "content": extra_system.strip()})
-    if duck_block_has_tabular_rows(duck_block):
-        messages.append({"role": "system", "content": system_sql_strict()})
-    if rag_context_includes_pdf_excerpts(rag_block):
-        messages.append({"role": "system", "content": system_rag_verbatim_snippet()})
-    messages.append({"role": "system", "content": ctx})
-    sn = school_name_reinforcement(user_message, rag_block)
-    if sn:
-        messages.append({"role": "system", "content": sn})
-    for m in history:
-        if m.get("role") in ("user", "assistant") and m.get("content"):
-            messages.append({"role": m["role"], "content": m["content"]})
-    messages.append({"role": "user", "content": user_message})
-
-    url = f"{OPENAI_BASE_URL}/chat/completions"
-    body = {
-        "model": OPENAI_CHAT_MODEL,
-        "messages": messages,
-        "stream": True,
-        "temperature": chat_stream_temperature(duck_block),
-    }
     try:
         attempt = 0
         while attempt < ROTINA_API_HTTP_MAX_RETRIES:
@@ -935,6 +928,78 @@ def openai_chat_stream(
         yield f"**Erro HTTP da API:** {e.response.status_code}. {detail}{hint}"
     except httpx.TimeoutException as e:
         yield f"**Timeout na API:** `{e}`"
+
+
+def openai_chat_stream(
+    user_message: str,
+    duck_block: str,
+    rag_block: str,
+    history: Iterable[dict[str, str]],
+    extra_system: str | None = None,
+) -> Generator[str, None, None]:
+    ctx = f"""## Dados tabulares (consultas internas)
+{duck_block}
+
+## Trechos de documentos institucionais
+{rag_block}
+"""
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_persona()},
+        {"role": "system", "content": system_grounding()},
+    ]
+    if extra_system and extra_system.strip():
+        messages.append({"role": "system", "content": extra_system.strip()})
+    if duck_block_has_tabular_rows(duck_block):
+        messages.append({"role": "system", "content": system_sql_strict()})
+    if rag_context_includes_pdf_excerpts(rag_block):
+        messages.append({"role": "system", "content": system_rag_verbatim_snippet()})
+    messages.append({"role": "system", "content": ctx})
+    sn = school_name_reinforcement(user_message, rag_block)
+    if sn:
+        messages.append({"role": "system", "content": sn})
+    for m in history:
+        if m.get("role") in ("user", "assistant") and m.get("content"):
+            messages.append({"role": m["role"], "content": m["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    url = f"{OPENAI_BASE_URL}/chat/completions"
+    temperature = chat_stream_temperature(duck_block)
+    body: dict[str, Any] = {
+        "model": OPENAI_CHAT_MODEL,
+        "messages": messages,
+        "stream": True,
+        "temperature": temperature,
+    }
+
+    try:
+        from modules.langfuse_rotina import (
+            iterate_stream_with_langfuse,
+            langfuse_integration_enabled,
+            start_chat_stream_generation,
+        )
+
+        if langfuse_integration_enabled():
+            lf_gen = start_chat_stream_generation(
+                name="streamlit-chat-completion",
+                model=str(OPENAI_CHAT_MODEL),
+                messages=messages,
+                model_parameters={"temperature": temperature},
+            )
+            inner = _openai_chat_stream_http_chunks(
+                messages=messages,
+                url=url,
+                body=body,
+            )
+            yield from iterate_stream_with_langfuse(lf_gen, inner)
+            return
+    except ImportError:
+        pass
+
+    yield from _openai_chat_stream_http_chunks(
+        messages=messages,
+        url=url,
+        body=body,
+    )
 
 
 def llm_plan_sources(

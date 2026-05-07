@@ -8,6 +8,7 @@ import random
 import re
 import shutil
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -228,10 +229,54 @@ def _chromadb_client_persist(client: Any) -> None:
 
 def reset_rotina_chroma_persist(persist_dir: Path | None = None) -> None:
     """Apaga o diretório do ChromaDB (reindexação completa no próximo `get_chroma_collection`)."""
+    _chromadb_clear_singleton_cache()
     p = (persist_dir or CHROMA_DIR).resolve()
     if p.is_dir():
         shutil.rmtree(p, ignore_errors=True)
     p.mkdir(parents=True, exist_ok=True)
+
+
+def _chromadb_clear_singleton_cache() -> None:
+    """
+    Chroma ≥1.x partilha um `System` por diretório persistente. Se o primeiro cliente
+    falhar após abrir a BD, apagar ficheiros em disco não basta: o singleton continua
+    a apontar para o estado antigo. Parar + limpar o cache antes de `rmtree` evita o
+    erro repetido em `PersistentClient` (ex.: `default_tenant`).
+    """
+    try:
+        from chromadb.api.client import Client
+        from chromadb.api.shared_system_client import SharedSystemClient
+    except Exception:
+        return
+    try:
+        for system in list(SharedSystemClient._identifier_to_system.values()):
+            try:
+                system.stop()
+            except Exception:
+                pass
+        Client.clear_system_cache()
+    except Exception:
+        pass
+
+
+def _chromadb_persistent_client(persist_dir: Path) -> Any:
+    """
+    Cliente SQLite local com recuperação quando o on-disk ficou legado/incompatível
+    (upgrade Chroma à volta de tenants/databases ex.: erro `default_tenant`).
+    """
+    try:
+        return chromadb.PersistentClient(path=str(persist_dir))
+    except ValueError as e:
+        if "tenant" not in str(e).lower():
+            raise
+        warnings.warn(
+            "ChromaDB: persistência incompatível com esta versão; os vetores foram "
+            "limpados — reindexação a partir dos PDFs ao continuar.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        reset_rotina_chroma_persist(persist_dir)
+        return chromadb.PersistentClient(path=str(persist_dir))
 
 
 def _drop_rotina_chroma_collection(client: Any, name: str) -> None:
@@ -695,7 +740,7 @@ def rag_will_run_full_document_ingest(persist_dir: Path, data_dir: Path) -> bool
     if not persist_dir.is_dir():
         return True
     try:
-        client = chromadb.PersistentClient(path=str(persist_dir))
+        client = _chromadb_persistent_client(persist_dir)
         col = client.get_collection(CHROMA_COLLECTION)
         return int(col.count()) == 0
     except Exception:
@@ -717,7 +762,7 @@ def get_chroma_collection(
     fp_stored = _read_rag_stored_fingerprint(persist_dir)
 
     emb = build_chroma_embedding_function()
-    client = chromadb.PersistentClient(path=str(persist_dir))
+    client = _chromadb_persistent_client(persist_dir)
     collection = client.get_or_create_collection(
         name=CHROMA_COLLECTION,
         embedding_function=emb,

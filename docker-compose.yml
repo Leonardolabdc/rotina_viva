@@ -45,6 +45,11 @@ services:
     env_file:
       - .env
     environment:
+      # Evita o prompt interactivo "Would you like to view your execution traces?" no contentor.
+      CREWAI_DISABLE_TELEMETRY: "true"
+      # CrewAI/LiteLLM: o upstream só aplica `LITELLM_SUCCESS_CALLBACKS` se `LITELLM_FAILURE_CALLBACKS` existir.
+      LITELLM_SUCCESS_CALLBACKS: "langfuse"
+      LITELLM_FAILURE_CALLBACKS: "langfuse"
       ROTINA_DATA_DIR: /data
       CHROMA_PERSIST_DIR: /data/vector_db
       OPENAI_TRANSCRIBE_BASE_URL: http://whisper:9000/v1

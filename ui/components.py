@@ -399,6 +399,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("rotina_direct_chat_student", None)
     st.session_state.setdefault("rotina_login_username", "")
     st.session_state.setdefault("rotina_predictive_ml", False)
+    st.session_state.setdefault("rotina_crewai_mode", False)
 
 def pin_chat_footer_row() -> None:
     """Fixa a linha com st.chat_input no rodapé e alinha à largura da área principal."""
@@ -551,6 +552,31 @@ def render_chat_sidebar_internals() -> Any:
                 "descreva no chat o que quer inserir ou alterar. "
                 "Para consultar só tabelas, prefira **Só dados estruturados** ou **Automático**."
             )
+    st.divider()
+    st.markdown("**CrewAI — multi-agente (paralelo)**")
+    try:
+        from modules.rotina_crew.runner import crewai_import_ok as _rotina_crew_dep_ok
+
+        _crew_dep = _rotina_crew_dep_ok()
+    except Exception:
+        _crew_dep = False
+    if not ai_engine.use_openai_compatible_chat():
+        st.caption(
+            "CrewAI neste modo usa LangChain OpenAI: defina `ROTINA_CHAT_PROVIDER=openai` ou `openrouter` e chave API. "
+            "Com **Ollama**, mantenha esta opção desligada."
+        )
+    elif not _crew_dep:
+        st.caption("Instale: `pip install crewai langchain-openai`.")
+    st.checkbox(
+        "Orquestrar resposta com **CrewAI**",
+        key="rotina_crewai_mode",
+        disabled=not (_crew_dep and ai_engine.use_openai_compatible_chat()),
+        help=(
+            "Receção primeiro; especialistas relevantes seguem **em paralelo**; síntese final no fim. "
+            "Mais lento e mais caro em tokens. Por agente: logs (`rotina.crew`, ex. `docker logs -f`). "
+            "O planeamento SQL/RAG/mutações mantém-se antes da crew."
+        ),
+    )
     if st.button("Limpar conversa", key="rotina_clear_chat_btn"):
         _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
         if _old_cid and _is_safe_chat_session_id(_old_cid):
@@ -641,7 +667,7 @@ def render_rotina_chat(
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            st.markdown(msg.get("content", "") if isinstance(msg, dict) else msg["content"])
 
     _rotina_voice_spinner_slot = st.empty()
 
@@ -1102,24 +1128,76 @@ def render_rotina_chat(
                     render_rag_sidebar_body(rag_sidebar_body)
                     return
 
-                def _gen() -> Generator[str, None, None]:
-                    yield from ai_engine.processar_resposta_chat_stream(
-                        user_text,
-                        duck_block,
-                        rag_block,
-                        history_for_model,
-                        extra_system=_extra_chat or None,
-                    )
-
-                _streamed = st.write_stream(_gen()) or ""
-                full = (
-                    _streamed
-                    if isinstance(_streamed, str)
-                    else "".join(str(x) for x in _streamed)
+                _use_crew = bool(st.session_state.get("rotina_crewai_mode")) and (
+                    ai_engine.use_openai_compatible_chat()
                 )
+                _crew_ok = False
+                try:
+                    from modules.rotina_crew.runner import crewai_import_ok as _crew_imp_ok
+
+                    _crew_ok = _crew_imp_ok()
+                except Exception:
+                    _crew_ok = False
+                if _use_crew and _crew_ok:
+                    from modules.rotina_crew.runner import run_rotina_crew_chat as _run_rotina_crew
+
+                    try:
+                        with st.spinner("CrewAI a orquestrar agentes…"):
+                            _cr_out = _run_rotina_crew(
+                                user_text=user_text,
+                                duck_block=duck_block,
+                                rag_block=rag_block,
+                                ml_addon=ml_addon or "",
+                                predictive_ml=_pred_ml,
+                                conn=_conn,
+                                data_dir=DATA_DIR,
+                                collection=collection,
+                            )
+                        full = _cr_out.final_markdown
+                        st.markdown(full)
+                    except Exception as _crew_exc:
+                        st.warning(f"CrewAI falhou ({_crew_exc!s}); a usar resposta em **streaming**.")
+                        def _gen() -> Generator[str, None, None]:
+                            yield from ai_engine.processar_resposta_chat_stream(
+                                user_text,
+                                duck_block,
+                                rag_block,
+                                history_for_model,
+                                extra_system=_extra_chat or None,
+                            )
+
+                        _streamed = st.write_stream(_gen()) or ""
+                        full = (
+                            _streamed
+                            if isinstance(_streamed, str)
+                            else "".join(str(x) for x in _streamed)
+                        )
+                else:
+                    if _use_crew and not _crew_ok:
+                        st.caption(
+                            "Modo CrewAI ligado, mas o pacote `crewai` não está instalado — "
+                            "a usar resposta em streaming único. `pip install crewai langchain-openai`."
+                        )
+
+                    def _gen() -> Generator[str, None, None]:
+                        yield from ai_engine.processar_resposta_chat_stream(
+                            user_text,
+                            duck_block,
+                            rag_block,
+                            history_for_model,
+                            extra_system=_extra_chat or None,
+                        )
+
+                    _streamed = st.write_stream(_gen()) or ""
+                    full = (
+                        _streamed
+                        if isinstance(_streamed, str)
+                        else "".join(str(x) for x in _streamed)
+                    )
                 progress_ui.empty()
 
-            st.session_state.messages.append({"role": "assistant", "content": full})
+            _asst_msg: dict[str, Any] = {"role": "assistant", "content": full}
+            st.session_state.messages.append(_asst_msg)
 
     if st.session_state.get("rotina_voice_unlock_mic_after_reply") and (
         st.session_state.messages

@@ -5,10 +5,20 @@ Streamlit + DuckDB (CSVs) + ChromaDB (RAG) + LLM/embeddings (API ou Ollama local
 
 from __future__ import annotations
 
+import logging
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_log_app = logging.getLogger("rotina.app")
+
+try:
+    from modules.langfuse_rotina import init_langfuse_integration
+
+    init_langfuse_integration()
+except Exception as e:
+    _log_app.warning("init_langfuse_integration: %s", e, exc_info=True)
 
 from core.auth_manager import render_login, try_restore_rotina_browser_session
 from core.database import DATA_DIR

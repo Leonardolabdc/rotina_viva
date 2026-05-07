@@ -189,6 +189,21 @@ def _coerce_stored_chat_messages_list(data: list[Any]) -> list[dict[str, Any]] |
         pm = m.get("predictive_ml")
         if isinstance(pm, bool):
             item["predictive_ml"] = pm
+        if role == "assistant":
+            ct = m.get("crew_traces")
+            if isinstance(ct, list):
+                cleaned: list[dict[str, str]] = []
+                for x in ct:
+                    if not isinstance(x, dict):
+                        continue
+                    cleaned.append(
+                        {
+                            "agent": str(x.get("agent", ""))[:200],
+                            "content": str(x.get("content", ""))[:20000],
+                        }
+                    )
+                if cleaned:
+                    item["crew_traces"] = cleaned
         out.append(item)
     return out
 

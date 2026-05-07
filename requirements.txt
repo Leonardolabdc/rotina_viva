@@ -13,3 +13,7 @@ flaml[automl]>=2.1,<3
 datasets>=2.16,<4
 scikit-learn>=1.3,<2
 deep-translator>=1.11,<2
+crewai>=0.86,<1
+langchain-openai>=0.2,<1
+# Langfuse 2.x: LiteLLM/CrewAI ainda usam `Langfuse.trace()` / API v2 (incompatível com SDK 3.x).
+langfuse>=2.57.0,<3

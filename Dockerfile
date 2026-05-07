@@ -3,10 +3,14 @@
 FROM python:3.12-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1 \
+    PYTHONIOENCODING=utf-8 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH=/app \
     ROTINA_DATA_DIR=/data \
-    CHROMA_PERSIST_DIR=/data/vector_db
+    CHROMA_PERSIST_DIR=/data/vector_db \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
 
 WORKDIR /app
 
