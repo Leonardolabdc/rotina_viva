@@ -57,6 +57,7 @@ from modules.chat_service import (
     augment_cadastro_question_with_history,
     augment_question_for_parent_rag,
     build_mutation_direct_reply,
+    is_rag_nutrition_meals_scope_question,
     normalize_plan,
 )
 from modules.rag_index import (
@@ -883,6 +884,24 @@ def render_rotina_chat(
                         plan = apply_user_data_source_mode(plan, mode_ds)
                         plan = promote_plan_sql_mutation_field(plan)
                         plan = apply_infer_sql_to_plan(plan, planning_user_text)
+                        if is_rag_nutrition_meals_scope_question(user_text):
+                            # Cardápio/refeições: priorizar PDF nutricional e evitar SQL do diário
+                            # (que só tem "comeu bem/pouco/recusou" e não o menu por dia).
+                            plan = dict(plan)
+                            plan["fontes"] = ["rag"]
+                            plan["sql"] = None
+                            proc.write(
+                                "Escopo nutricional detectado: a resposta será baseada no PDF de planejamento nutricional (RAG)."
+                            )
+                        elif ml_emotion_chat.predictive_message_looks_emotional(user_text):
+                            # Mesmo com IA preditiva desligada, incidentes emocionais/comportamentais
+                            # precisam de base documental (saúde/segurança/convivência), não só SQL.
+                            plan = dict(plan)
+                            plan["fontes"] = ["rag"]
+                            plan["sql"] = None
+                            proc.write(
+                                "Incidente emocional/comportamental detectado: priorizando documentos (RAG)."
+                            )
                         if ml_emotion_chat.chat_round_suppress_csv_mutations(
                             user_text, predictive_session=_pred_ml
                         ):
@@ -1279,7 +1298,7 @@ def _render_gestao_ou_educador(
             ):
                 reset_rotina_chroma_persist(CHROMA_DIR)
                 try:
-                    get_chroma_collection.clear()
+                    get_chroma_collection.cache_clear()
                 except Exception:
                     pass
                 st.success("Índice RAG removido. A página vai recarregar.")

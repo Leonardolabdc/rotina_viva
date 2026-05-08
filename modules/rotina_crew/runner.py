@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -235,6 +236,35 @@ def _final_text(crew_output: Any) -> str:
     return str(crew_output).strip()
 
 
+def _normalize_for_dup(text: str) -> str:
+    t = (text or "").strip().lower()
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _remove_duplicate_tail_paragraph(markdown: str) -> str:
+    """
+    Evita respostas "em dobro" quando o último parágrafo repete o anterior
+    (comum na síntese final da crew: resumo + conclusão quase idênticos).
+    """
+    parts = [p.strip() for p in re.split(r"\n\s*\n", markdown or "") if p.strip()]
+    if len(parts) < 2:
+        return markdown
+
+    last = parts[-1]
+    prev = parts[-2]
+    n_last = _normalize_for_dup(last)
+    n_prev = _normalize_for_dup(prev)
+    if not n_last or not n_prev:
+        return markdown
+
+    # Remove só quando o último é claramente redundante.
+    if n_last == n_prev or n_last in n_prev or n_prev in n_last:
+        return "\n\n".join(parts[:-1]).strip()
+    return markdown
+
+
 @dataclass
 class CrewChatResult:
     final_markdown: str
@@ -338,8 +368,8 @@ def run_rotina_crew_chat(
     )
     redator = Agent(
         role="Redatora — síntese final",
-        goal="Unificar contributos numa resposta única, curta quando possível, em Markdown.",
-        backstory="Garante tom consistente em pt-BR e evita repetições entre agentes.",
+        goal="Entregar resposta única, direta e objetiva em Markdown.",
+        backstory="Foca na resposta final sem saudações longas, sem introduções genéricas e sem repetição.",
         llm=llm,
         verbose=False,
         allow_delegation=False,
@@ -401,6 +431,8 @@ def run_rotina_crew_chat(
         name="redatora_final",
         description=base_ctx
         + "\n**Tarefa:** integre as saídas anteriores numa **única resposta final** ao utilizador.\n"
+        "- Comece diretamente pela resposta; evite frases como 'Olá', 'É um prazer', 'Estou aqui para ajudar'.\n"
+        "- Seja concisa: máximo de 5-8 linhas para perguntas factuais.\n"
         "- Use **Markdown** (títulos `##`, listas, negrito).\n"
         "- Não repita literalmente blocos CSV longos; resuma.\n"
         "- Não contradizas os dados tabulares nem os trechos RAG fornecidos.\n"
@@ -448,6 +480,7 @@ def run_rotina_crew_chat(
     final = _final_text(out)
     if not final and traces:
         final = traces[-1]["content"]
+    final = _remove_duplicate_tail_paragraph(final or "")
 
     try:
         from modules.langfuse_rotina import log_crew_trace_tree_if_enabled

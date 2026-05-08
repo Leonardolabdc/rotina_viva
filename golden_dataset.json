@@ -1,0 +1,62 @@
+[
+  {
+    "input": "A aluna Ana Almeida tem alguma alergia?",
+    "expected_output": "Sim, Ana Almeida possui alergia a Amendoim.",
+    "context": ["Ficha de Alunos - Alergias"],
+    "retrieval_context": ["info_alunos.csv"]
+  },
+  {
+    "input": "O aluno Bruno Reis está em qual turma?",
+    "expected_output": "O aluno Bruno Reis não foi localizado na base de dados atual. Verifique se o nome está correto ou consulte a secretaria.",
+    "context": ["Lista de Enturmação"],
+    "retrieval_context": ["info_alunos.csv"]
+  },
+  {
+    "input": "Qual o horário de funcionamento da escola?",
+    "expected_output": "No Turno Matutino, a entrada é das 07h30 às 08h30 com saída às 12h00. No Turno Integral, a entrada é até às 09h00 com saída até às 17h30.",
+    "context": ["Regimento Interno - Escola Infantil Primeiros Passos"],
+    "retrieval_context": ["regimento_interno_escola.pdf"]
+  },
+  {
+    "input": "Qual é o protocolo de febre da escola?",
+    "expected_output": "Se a criança apresentar temperatura de 37,8°C ou superior, o professor registra no Rotina Viva e os pais são acionados para retirada. A criança deve estar sem febre há 24 horas para retornar.",
+    "context": ["Manual de Saúde e Bem-estar Escolar"],
+    "retrieval_context": ["guia_procedimentos_saude_seguranca.pdf"]
+  },
+  {
+    "input": "O que tem de almoço na Quarta-Feira?",
+    "expected_output": "O almoço de Quarta-feira é: Arroz integral, feijão preto, frango e brócolis.",
+    "context": ["Planejamento Nutricional Mensal"],
+    "retrieval_context": ["planejamento_nutricional_semanal.pdf"]
+  },
+  {
+    "input": "O aluno machucou o pé e chorou, logo não voltou a brincar",
+    "expected_output": "A emoção detectada é tristeza/desânimo por não participar das atividades. Procedimento: Realizar assepsia com soro fisiológico conforme o Guia de Segurança e registrar no Rotina Viva.",
+    "context": ["Análise de Sentimento", "Guia de Procedimentos de Saúde e Segurança"],
+    "retrieval_context": ["guia_procedimentos_saude_seguranca.pdf"]
+  },
+  {
+    "input": "A aluna brincou bastante e riu muito durante a aula de pintura",
+    "expected_output": "Análise: Emoção de alegria e alto engajamento detectados. Registro: Desenvolvimento socioemocional positivo e interação social satisfatória conforme o PPP.",
+    "context": ["Análise de Sentimento", "Projeto Político Pedagógico"],
+    "retrieval_context": ["ppp_projeto_político_pedagógico.pdf"]
+  },
+  {
+    "input": "O aluno gritou e bateu no colega",
+    "expected_output": "Análise: Detecção de raiva ou frustração. Ação: Intervenção imediata e mediação de conflito conforme as normas de convivência do Regimento Interno.",
+    "context": ["Análise de Sentimento", "Regimento Interno - Normas de Convivência"],
+    "retrieval_context": ["regimento_interno_escola.pdf"]
+  },
+  {
+    "input": "Um aluno não foi brincar pois disse que o colega não deixou",
+    "expected_output": "Análise: Possível sentimento de exclusão social. Ação: Promover atividades inclusivas e observar a dinâmica do grupo conforme as diretrizes do PPP.",
+    "context": ["Análise de Sentimento", "Projeto Político Pedagógico"],
+    "retrieval_context": ["ppp_projeto_político_pedagógico.pdf"]
+  },
+  {
+    "input": "Em que turma está a aluna Beatriz Santos?",
+    "expected_output": "A aluna Beatriz Santos está matriculada na turma Infantil 3.",
+    "context": ["Lista de Enturmação"],
+    "retrieval_context": ["info_alunos.csv"]
+  }
+]

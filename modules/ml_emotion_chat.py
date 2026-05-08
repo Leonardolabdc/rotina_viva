@@ -40,6 +40,28 @@ _PT_WORD_RE = re.compile(
 # Partir uma linha com várias frases (mesmo parágrafo) — uma predição por frase.
 _EMOTION_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
 
+# Quando o interruptor "IA preditiva" está ligado, evitamos contaminar perguntas
+# factuais (cardápio, turma, horário, protocolo etc.) com o addon de emoções.
+_PREDICTIVE_FACTUAL_HINT_RE = re.compile(
+    r"\b("
+    r"card[áa]pio|almo[çc]o|cafe\s+da\s+manha|merenda|lanche|jantar|"
+    r"turma|matr[ií]cula|alergia|protocolo|hor[áa]rio|funcionamento|"
+    r"regimento|ppp|manual|guia|csv|documento|tabela|base\s+de\s+dados|"
+    r"qual|quando|onde|quem|quanto|tem|qual\s+[ée]"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_PREDICTIVE_EMOTION_HINT_RE = re.compile(
+    r"\b("
+    r"emo[cç][aã]o|sentimento|sentiu|sentiu|est[áa]\s+(triste|feliz|nervos[oa]|ansios[oa]|irritad[oa]|"
+    r"com\s+medo|chatead[oa]|frustrad[oa]|calm[oa])|"
+    r"chorou|gritou|bateu|raiva|medo|alegria|tristeza|frustra[cç][aã]o|"
+    r"engajamento|exclus[aã]o"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def expand_emotion_lines(lines: list[str], *, max_segments: int = 40) -> list[str]:
     """
@@ -110,6 +132,23 @@ def lines_likely_non_english(lines: list[str]) -> bool:
         return True
     if _PT_WORD_RE.search(blob):
         return True
+    return False
+
+
+def predictive_message_looks_emotional(user_text: str) -> bool:
+    """
+    Heurística para o modo "IA preditiva" contínuo:
+    - Se houver sinais claros de emoção/comportamento, aplica ML.
+    - Se for claramente consulta factual, não injeta addon ML.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return False
+    if _PREDICTIVE_EMOTION_HINT_RE.search(text):
+        return True
+    if _PREDICTIVE_FACTUAL_HINT_RE.search(text):
+        return False
+    # fallback conservador para evitar enviesar perguntas objetivas.
     return False
 
 # Prefixos que disparam inferência (comparação case-insensitive só no início da mensagem)
@@ -264,6 +303,8 @@ def build_emotion_ml_llm_addon(
     if cmd_lines is not None:
         lines = cmd_lines
     elif predictive_session:
+        if not predictive_message_looks_emotional(user_text):
+            return ""
         raw = (user_text or "").strip()
         if not raw:
             return ""

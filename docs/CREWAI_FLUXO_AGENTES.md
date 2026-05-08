@@ -114,7 +114,7 @@ LLM/API: igual ao chat OpenAI-compatível (`ROTINA_CHAT_PROVIDER`, chaves, `OPEN
 - O detalhe por agente **não** é mostrado na UI; usar logs do contentor conforme acima.
 
 ---
-
+w
 ## Ficheiros relacionados
 
 | Ficheiro | Função |

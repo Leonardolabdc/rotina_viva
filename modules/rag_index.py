@@ -9,11 +9,11 @@ import re
 import shutil
 import time
 import warnings
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import chromadb
-import streamlit as st
 from dotenv import load_dotenv
 from pypdf import PdfReader
 
@@ -747,7 +747,7 @@ def rag_will_run_full_document_ingest(persist_dir: Path, data_dir: Path) -> bool
         return True
 
 
-@st.cache_resource
+@lru_cache(maxsize=4)
 def get_chroma_collection(
     persist_dir_str: str,
     data_dir_str: str,
