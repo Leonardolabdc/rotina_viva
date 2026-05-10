@@ -4,8 +4,8 @@ Langfuse opcional para a LLM Streamlit + CrewAI/LiteLLM.
 Usa **Langfuse Python SDK 2.x** (`langfuse>=2.57,<3`): o LiteLLM integra-se com `Langfuse.trace()` /
 `.generation()`, API removida na série 3.x (causa erros em silêncio no callback).
 
-Variáveis: `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_BASE_URL` (ou `LANGFUSE_HOST`).
-LiteLLM (CrewAI) usa `LANGFUSE_HOST`; se só existir `LANGFUSE_BASE_URL`, fazemos cópia no arranque.
+Variáveis: `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_HOST` e/ou `LANGFUSE_BASE_URL`.
+LiteLLM tende a usar `LANGFUSE_HOST`; no arranque `ensure_litellm_langfuse_env()` sincroniza host e base URL.
 Desligar: `ROTINA_LANGFUSE_ENABLED=false`.
 """
 
@@ -79,9 +79,60 @@ def _apply_langfuse_litellm_sdk_patch() -> None:
 
 
 def ensure_litellm_langfuse_env() -> None:
+    """
+    LiteLLM (callback Langfuse) lê sobretudo `LANGFUSE_HOST`; o SDK aceita `LANGFUSE_BASE_URL`.
+    Sincroniza os dois para `.env` com só um dos campos preenchidos.
+    """
     base = _strip_env_quotes(os.getenv("LANGFUSE_BASE_URL")).rstrip("/")
-    if base and not _strip_env_quotes(os.getenv("LANGFUSE_HOST")):
+    host = _strip_env_quotes(os.getenv("LANGFUSE_HOST")).rstrip("/")
+    if host and not base:
+        os.environ["LANGFUSE_BASE_URL"] = host
+        base = host
+    if base and not host:
         os.environ["LANGFUSE_HOST"] = base
+
+
+def configure_litellm_observability() -> None:
+    """
+    Configuração central LiteLLM para observabilidade (Etapa 2 / PUCPR):
+    - `success_callback` + async para Langfuse quando integração activa;
+    - `identify_installation` se existir na versão do LiteLLM (telemetria/repasse de usage em versões recentes).
+
+    Idempotente: pode chamar-se após `crewai.llm.LLM` limpar callbacks.
+    """
+    global _LITELLM_CALLBACKS_REGISTERED
+    try:
+        import litellm
+    except ImportError:
+        return
+    _sv = getattr(litellm, "set_verbose", None)
+    if callable(_sv):
+        _sv(False)
+    else:
+        try:
+            litellm.set_verbose = False  # type: ignore[misc]
+        except Exception:
+            pass
+    if hasattr(litellm, "identify_installation"):
+        try:
+            litellm.identify_installation = True  # type: ignore[misc]
+        except Exception as e:
+            _log.debug("litellm.identify_installation: %s", e)
+    if not langfuse_integration_enabled():
+        return
+    try:
+        import langfuse  # noqa: F401
+
+        _apply_langfuse_litellm_sdk_patch()
+        ensure_litellm_langfuse_env()
+        litellm.success_callback = ["langfuse"]
+        if hasattr(litellm, "_async_success_callback"):
+            litellm._async_success_callback = ["langfuse"]
+        litellm.logging_callback_manager.add_litellm_success_callback("langfuse")
+        litellm.logging_callback_manager.add_litellm_async_success_callback("langfuse")
+        _LITELLM_CALLBACKS_REGISTERED = True
+    except Exception as e:
+        _log.debug("configure_litellm_observability: %s", e)
 
 
 def _truncate_chat_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -100,9 +151,11 @@ def _truncate_chat_messages(messages: list[dict[str, str]]) -> list[dict[str, st
 
 def init_langfuse_integration() -> None:
     """Chamar uma vez ao arrancar (`app.py` após load_dotenv). Idempotente."""
-    global _LITELLM_CALLBACKS_REGISTERED, _langfuse_logged_disabled, _LANGFUSE_OK_LOGGED, _LANGFUSE_PARTIAL_WARNED
+    global _langfuse_logged_disabled, _LANGFUSE_OK_LOGGED, _LANGFUSE_PARTIAL_WARNED
 
     ensure_litellm_langfuse_env()
+    configure_litellm_observability()
+
     if not langfuse_integration_enabled():
         sk = _strip_env_quotes(os.getenv("LANGFUSE_SECRET_KEY"))
         pk = _strip_env_quotes(os.getenv("LANGFUSE_PUBLIC_KEY"))
@@ -134,29 +187,21 @@ def init_langfuse_integration() -> None:
         return
 
     try:
-        # LiteLLM (CrewAI) → Langfuse — CrewAI usa sobretudo **async**; registar sync + async.
-        if not _LITELLM_CALLBACKS_REGISTERED:
-            ensure_litellm_langfuse_env()
-            import litellm
-
-            litellm.logging_callback_manager.add_litellm_success_callback("langfuse")
-            litellm.logging_callback_manager.add_litellm_async_success_callback("langfuse")
-            _LITELLM_CALLBACKS_REGISTERED = True
-            if not _LANGFUSE_OK_LOGGED:
-                _LANGFUSE_OK_LOGGED = True
-                host = _strip_env_quotes(os.getenv("LANGFUSE_HOST")) or _strip_env_quotes(
-                    os.getenv("LANGFUSE_BASE_URL")
-                )
-                _log.info(
-                    "Langfuse: activo — SDK + callbacks LiteLLM (sync/async). Host=%s",
-                    host or "(n/d)",
-                )
-                print(
-                    f"[rotina] Langfuse: LiteLLM callbacks registados (host={host or 'n/d'})",
-                    file=sys.stderr,
-                    flush=True,
-                )
-    except ImportError as e:
+        if _LITELLM_CALLBACKS_REGISTERED and not _LANGFUSE_OK_LOGGED:
+            _LANGFUSE_OK_LOGGED = True
+            host = _strip_env_quotes(os.getenv("LANGFUSE_HOST")) or _strip_env_quotes(
+                os.getenv("LANGFUSE_BASE_URL")
+            )
+            _log.info(
+                "Langfuse: activo — SDK + callbacks LiteLLM (sync/async). Host=%s",
+                host or "(n/d)",
+            )
+            print(
+                f"[rotina] Langfuse: LiteLLM callbacks registados (host={host or 'n/d'})",
+                file=sys.stderr,
+                flush=True,
+            )
+    except Exception as e:
         _log.warning("LiteLLM indisponível para callback Langfuse (%s)", e)
 
 
@@ -166,19 +211,7 @@ def refresh_litellm_langfuse_callbacks() -> None:
     limpar ou sobrescrever `litellm.success_callback` (ex.: `LITELLM_FAILURE_CALLBACKS` sem
     `LITELLM_SUCCESS_CALLBACKS`). Voltar a registar o callback **depois** de instanciar o LLM da Crew.
     """
-    if not langfuse_integration_enabled():
-        return
-    try:
-        import langfuse  # noqa: F401
-
-        _apply_langfuse_litellm_sdk_patch()
-        import litellm
-
-        ensure_litellm_langfuse_env()
-        litellm.logging_callback_manager.add_litellm_success_callback("langfuse")
-        litellm.logging_callback_manager.add_litellm_async_success_callback("langfuse")
-    except Exception as e:
-        _log.debug("refresh_litellm_langfuse_callbacks: %s", e)
+    configure_litellm_observability()
 
 
 def _get_langfuse() -> Any | None:
@@ -220,6 +253,107 @@ def lf_flush() -> None:
         lf.flush()
     except Exception as e:
         _log.debug("langfuse.flush: %s", e)
+
+
+def _litellm_model_slug_for_rotina_cost() -> str:
+    """Nome de modelo no formato LiteLLM (ex.: `openrouter/...`) para `completion_cost`."""
+    from modules import ai_engine
+
+    model = (ai_engine.OPENAI_CHAT_MODEL or "").strip()
+    if not model:
+        return "gpt-4o-mini"
+    low = model.lower()
+    base = (ai_engine.OPENAI_BASE_URL or "").strip().lower()
+    use_openrouter = ai_engine.ROTINA_CHAT_PROVIDER == "openrouter" or "openrouter.ai" in base
+    if use_openrouter and not low.startswith("openrouter/"):
+        return f"openrouter/{model}"
+    return model
+
+
+def emit_crew_aggregated_usage_to_langfuse(
+    *,
+    langfuse_trace_id: str,
+    crew_output: Any,
+    req_id: str,
+) -> None:
+    """
+    Fail-safe: o contador de tokens do CrewAI agrega usage por `kickoff()`; envia para o Langfuse
+    como geração filha do trace (usage_details + custo estimado LiteLLM), complementando o callback LiteLLM.
+    """
+    if not (langfuse_trace_id and str(langfuse_trace_id).strip()) or not langfuse_integration_enabled():
+        return
+    lf = _get_langfuse()
+    if lf is None:
+        return
+    u = getattr(crew_output, "token_usage", None)
+    if u is None:
+        return
+    pt = int(getattr(u, "prompt_tokens", 0) or 0)
+    ct = int(getattr(u, "completion_tokens", 0) or 0)
+    tt = int(getattr(u, "total_tokens", 0) or 0)
+    if pt == 0 and ct == 0 and tt == 0:
+        return
+    if tt <= 0:
+        tt = pt + ct
+    model = _litellm_model_slug_for_rotina_cost()
+    cost_details: dict[str, float] | None = None
+    try:
+        import litellm
+
+        c = litellm.completion_cost(
+            completion_response={
+                "model": model,
+                "usage": {
+                    "prompt_tokens": pt,
+                    "completion_tokens": ct,
+                    "total_tokens": tt,
+                },
+            },
+        )
+        if isinstance(c, (int, float)) and c >= 0:
+            cost_details = {"total": float(c)}
+    except Exception as e:
+        _log.debug("emit_crew_aggregated_usage_to_langfuse.completion_cost: %s", e)
+
+    meta_usage = {
+        "crew_prompt_tokens": pt,
+        "crew_completion_tokens": ct,
+        "crew_total_tokens": tt,
+        "crew_successful_requests": int(getattr(u, "successful_requests", 0) or 0),
+    }
+    gen_id = f"rotina-crew-usage::{langfuse_trace_id}"
+    try:
+        trace = lf.trace(id=langfuse_trace_id)
+        trace.update(metadata={"rotina.crew.token_usage": meta_usage})
+        try:
+            trace.update(
+                usage={
+                    "promptTokens": pt,
+                    "completionTokens": ct,
+                    "totalTokens": tt,
+                }
+            )
+        except Exception:
+            pass
+        g = trace.generation(
+            id=gen_id,
+            name="CrewAI — uso LLM agregado (fail-safe)",
+            model=model,
+            metadata={
+                "source": "rotina-viva-crew-token-counter",
+                "rotina.crew.req_id": req_id,
+            },
+            input={
+                "note": "Tokens somados pelo CrewAI após kickoff; custo estimado via LiteLLM quando aplicável.",
+            },
+            usage_details={"input": pt, "output": ct},
+            cost_details=cost_details,
+            output=f"total_tokens={tt} (prompt={pt}, completion={ct})",
+        )
+        g.end()
+        lf_flush()
+    except Exception as e:
+        _log.warning("emit_crew_aggregated_usage_to_langfuse: %s", e)
 
 
 def start_chat_stream_generation(
@@ -275,6 +409,8 @@ def observe_openai_generation(
     model_parameters: dict[str, Any] | None,
     output: Any,
     err: BaseException | None = None,
+    usage_details: dict[str, int] | None = None,
+    cost_details: dict[str, float] | None = None,
 ) -> None:
     lf = _get_langfuse()
     if lf is None:
@@ -293,7 +429,12 @@ def observe_openai_generation(
             out = output if isinstance(output, str) else str(output)
             if len(out) > _MAX_CHARS_PER_MESSAGE:
                 out = out[: _MAX_CHARS_PER_MESSAGE - 1] + "…"
-            g.update(output=out)
+            upd: dict[str, Any] = {"output": out}
+            if usage_details:
+                upd["usage_details"] = usage_details
+            if cost_details:
+                upd["cost_details"] = cost_details
+            g.update(**upd)
         g.end()
         lf_flush()
     except Exception as e:

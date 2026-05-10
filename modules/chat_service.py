@@ -503,6 +503,15 @@ def infer_structured_select_sql(user_message: str) -> str | None:
     )
     date_clause = _parse_diary_date_filter_sql(um)
     week_range = _diario_question_wants_week_range(um)
+    # Perguntas de enturmação (cadastro) não devem ser desviadas para SELECT do diário só porque
+    # a frase contém palavras do léxico de rotina (ex.: "rotina", "atividade" em outros contextos).
+    wants_pure_turma_lookup = bool(
+        re.search(r"(?i)\bqual\s+turma\b", um)
+        or re.search(r"(?i)\bem\s+qual\s+turma\b", um)
+        or re.search(r"(?i)\bem\s+que\s+turma\b", um)
+    )
+    if wants_diario and wants_cadastro and wants_pure_turma_lookup and name and not date_clause and not week_range:
+        wants_diario = False
     if week_range:
         diary_limit = 120
         order_diary = "d.data ASC, d.id_registro ASC"

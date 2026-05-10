@@ -7,7 +7,8 @@ ollama>=0.3,<1
 langchain-text-splitters>=0.3,<1
 pypdf>=4.0,<6
 httpx>=0.27,<1
-openai>=1.0,<2
+# instructor (dependência transitiva do crewai) exige openai>=1.70,<2
+openai>=1.70.0,<2.0.0
 SpeechRecognition>=3.10,<4
 flaml[automl]>=2.1,<3
 datasets>=2.16,<4
@@ -15,6 +16,8 @@ scikit-learn>=1.3,<2
 deep-translator>=1.11,<2
 crewai>=0.86,<1
 langchain-openai>=0.2,<1
+# CrewAI 0.203.x fixa esta versão do LiteLLM; outro intervalo gera conflito no pip e quebra o resolver.
+litellm==1.74.9
 # Langfuse 2.x: LiteLLM/CrewAI ainda usam `Langfuse.trace()` / API v2 (incompatível com SDK 3.x).
 langfuse>=2.57.0,<3
 deepeval>=2.0,<3

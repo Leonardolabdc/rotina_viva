@@ -11,6 +11,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+try:
+    from modules.langfuse_rotina import configure_litellm_observability
+
+    configure_litellm_observability()
+except Exception:
+    pass
+
 _log_app = logging.getLogger("rotina.app")
 
 try:

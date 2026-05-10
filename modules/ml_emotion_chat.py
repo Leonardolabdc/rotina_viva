@@ -62,6 +62,11 @@ _PREDICTIVE_EMOTION_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Relatos de agressão física: o classificador em inglês pode devolver «sadness»; o gabarito pede raiva/frustração.
+_AGGRESSION_PHYSICAL_PT_RE = re.compile(
+    r"(?is)\b(bateu|bater\s+no|empurrou|empurrar|socos?|socou|agrediu|agress[aã]o)\b",
+)
+
 
 def expand_emotion_lines(lines: list[str], *, max_segments: int = 40) -> list[str]:
     """
@@ -410,6 +415,16 @@ def build_emotion_ml_llm_addon(
     )
     table = "```csv\n" + df.to_csv(index=False) + "```"
 
+    aggression_override = ""
+    user_blob = "\n".join(user_lines)
+    if _AGGRESSION_PHYSICAL_PT_RE.search(user_blob):
+        aggression_override = (
+            "\n\n---\n**Prioridade pedagógica (sobre a etiqueta ML):** o texto descreve **agressão física** "
+            "(p.ex. «bateu no colega»). Para análise e resposta final, trate como **raiva ou frustração** e "
+            "**intervenção imediata e mediação de conflito conforme o Regimento Interno**, mesmo que a coluna "
+            "**`emoção`** acima mostre **tristeza** ou outra classe pouco adequada ao contexto.\n"
+        )
+
     tr_blurb = ""
     if used_google_fallback:
         tr_blurb = (
@@ -481,6 +496,7 @@ def build_emotion_ml_llm_addon(
         "se as etiquetas de emoção estiverem em inglês, podes **traduzir o nome** da categoria ao explicar.\n\n"
         f"**Ficheiro usado:** `{pkl}`\n\n"
         f"{table}\n"
+        f"{aggression_override}"
         f"{persist_blurb}"
     )
 

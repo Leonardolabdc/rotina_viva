@@ -7,9 +7,12 @@
   },
   {
     "input": "O aluno Bruno Reis está em qual turma?",
-    "expected_output": "O aluno Bruno Reis não foi localizado na base de dados atual. Verifique se o nome está correto ou consulte a secretaria.",
+    "expected_output": "Bruno Reis — turma Infantil 2.",
     "context": ["Lista de Enturmação"],
-    "retrieval_context": ["info_alunos.csv"]
+    "retrieval_context": [
+      "info_alunos.csv",
+      "Linha cadastral (info_alunos): 81,Bruno Reis,Infantil 2,Lactose,11999900081"
+    ]
   },
   {
     "input": "Qual o horário de funcionamento da escola?",
@@ -19,7 +22,7 @@
   },
   {
     "input": "Qual é o protocolo de febre da escola?",
-    "expected_output": "Se a criança apresentar temperatura de 37,8°C ou superior, o professor registra no Rotina Viva e os pais são acionados para retirada. A criança deve estar sem febre há 24 horas para retornar.",
+    "expected_output": "Febre/protocolo: a partir de 37,8°C (ou igual/superior) — registro no Rotina Viva, pais alertados para retirada da criança; retorno após pelo menos cerca de 24h sem febre.",
     "context": ["Manual de Saúde e Bem-estar Escolar"],
     "retrieval_context": ["guia_procedimentos_saude_seguranca.pdf"]
   },
@@ -55,8 +58,38 @@
   },
   {
     "input": "Em que turma está a aluna Beatriz Santos?",
-    "expected_output": "A aluna Beatriz Santos está matriculada na turma Infantil 3.",
+    "expected_output": "Beatriz Santos — turma Infantil 3.",
     "context": ["Lista de Enturmação"],
     "retrieval_context": ["info_alunos.csv"]
+  },
+  {
+    "input": "Um aluno está com o rosto vermelho, respiração rápida e se recusa a entrar na sala.",
+    "expected_output": "Análise: Detecção de medo ou ansiedade de separação. Ação: Acolhimento individualizado e uso de estratégias de transição previstas no PPP.",
+    "context": ["Análise de Sentimento", "Projeto Político Pedagógico"],
+    "retrieval_context": ["ppp_projeto_político_pedagógico.pdf"]
+  },
+  {
+    "input": "Quais são as regras para medicação de alunos?",
+    "expected_output": "Medicamentos só são administrados mediante receita médica e autorização assinada pelos pais, conforme o Guia de Procedimentos de Saúde.",
+    "context": ["Guia de Procedimentos de Saúde e Segurança"],
+    "retrieval_context": ["guia_procedimentos_saude_seguranca.pdf"]
+  },
+  {
+    "input": "Ele não está bem hoje.",
+    "expected_output": "Solicitar clarificação: Identificar se o mal-estar é físico (saúde) ou comportamental (análise de sentimento).",
+    "context": ["Manual de Saúde", "Análise de Sentimento"],
+    "retrieval_context": ["guia_procedimentos_saude_seguranca.pdf", "regimento_interno_escola.pdf"]
+  },
+  {
+    "input": "O aluno Lucas Oliveira (alérgico a lactose) ingeriu por engano um derivado de leite. O que fazer?",
+    "expected_output": "Ação Crítica: Acionar o protocolo de emergência alérgica, contatar pais/emergência e conferir ficha médica de Lucas Oliveira.",
+    "context": ["Ficha de Alunos", "Guia de Procedimentos de Saúde"],
+    "retrieval_context": ["info_alunos.csv", "guia_procedimentos_saude_seguranca.pdf"]
+  },
+  {
+    "input": "A atividade de hoje foi um barulho só na sala.",
+    "expected_output": "Análise: O sistema deve avaliar o contexto. Se associado a atividades lúdicas, classificar como alegria/engajamento. Se associado a conflitos, sugerir mediação.",
+    "context": ["Análise de Sentimento", "Regimento Interno"],
+    "retrieval_context": ["regimento_interno_escola.pdf"]
   }
 ]

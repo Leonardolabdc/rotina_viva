@@ -6,6 +6,19 @@ from typing import Any
 
 from modules import ai_engine
 
+try:
+    from modules.langfuse_rotina import configure_litellm_observability
+
+    configure_litellm_observability()
+except Exception:
+    pass
+
+# Cabeçalhos exigidos pelo OpenRouter (telemetria / ranking); alinhados à Etapa 2 (observabilidade).
+_CREW_OPENROUTER_EXTRA_HEADERS: dict[str, str] = {
+    "HTTP-Referer": "https://pucpr.br",
+    "X-Title": "Rotina Viva",
+}
+
 
 def _crew_litellm_model_name() -> str:
     """
@@ -49,6 +62,11 @@ def build_crew_chat_llm(
     extra: dict[str, Any] = {}
     if litellm_meta:
         extra["metadata"] = litellm_meta
+    base_l = (ai_engine.OPENAI_BASE_URL or "").strip().lower()
+    if ai_engine.ROTINA_CHAT_PROVIDER == "openrouter" or "openrouter.ai" in base_l:
+        extra["extra_headers"] = dict(_CREW_OPENROUTER_EXTRA_HEADERS)
+        # Último chunk de stream com usage (OpenRouter → LiteLLM → Langfuse); reforço além do CrewAI.
+        extra["stream_options"] = {"include_usage": True}
 
     llm = CrewAILLM(
         model=_crew_litellm_model_name(),
@@ -58,6 +76,14 @@ def build_crew_chat_llm(
         temperature=min(0.7, max(0.0, float(ai_engine.ROTINA_CHAT_TEMPERATURE))),
         **extra,
     )
+    # O CrewAI activa `litellm.drop_params=True` no __init__, o que pode remover parâmetros úteis
+    # (usage no stream, custos). Desactivar após instanciar para as completions seguintes.
+    try:
+        import litellm
+
+        litellm.drop_params = False
+    except ImportError:
+        pass
     try:
         from modules.langfuse_rotina import refresh_litellm_langfuse_callbacks
 

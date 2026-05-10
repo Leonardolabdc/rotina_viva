@@ -478,16 +478,22 @@ def _openai_headers() -> dict[str, str]:
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
+    base_l = (OPENAI_BASE_URL or "").strip().lower()
+    is_openrouter = ROTINA_CHAT_PROVIDER == "openrouter" or "openrouter.ai" in base_l
     referer = (
         os.getenv("OPENAI_HTTP_REFERER", "").strip()
         or os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
     )
+    if not referer and is_openrouter:
+        referer = "https://pucpr.br"
     if referer:
         h["HTTP-Referer"] = referer
     title = (
         os.getenv("OPENAI_APP_TITLE", "").strip()
         or os.getenv("OPENROUTER_APP_TITLE", "").strip()
     )
+    if not title and is_openrouter:
+        title = "Rotina Viva"
     if title:
         h["X-Title"] = title
     return h
