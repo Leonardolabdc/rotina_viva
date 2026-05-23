@@ -39,6 +39,11 @@ _PT_WORD_RE = re.compile(
 
 # Partir uma linha com várias frases (mesmo parágrafo) — uma predição por frase.
 _EMOTION_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+# Vírgula / conectores narrativos em PT (ex.: «chorou, logo não voltou…»).
+_EMOTION_CLAUSE_SPLIT = re.compile(
+    r"\s+(?:logo|então|entao|portanto|por\s+isso|pois)\s+|\s*;\s*",
+    re.IGNORECASE,
+)
 
 # Quando o interruptor "IA preditiva" está ligado, evitamos contaminar perguntas
 # factuais (cardápio, turma, horário, protocolo etc.) com o addon de emoções.
@@ -56,8 +61,9 @@ _PREDICTIVE_EMOTION_HINT_RE = re.compile(
     r"\b("
     r"emo[cç][aã]o|sentimento|sentiu|sentiu|est[áa]\s+(triste|feliz|nervos[oa]|ansios[oa]|irritad[oa]|"
     r"com\s+medo|chatead[oa]|frustrad[oa]|calm[oa])|"
-    r"chorou|gritou|bateu|raiva|medo|alegria|tristeza|frustra[cç][aã]o|"
-    r"engajamento|exclus[aã]o"
+    r"chorou|chorando|chora|gritou|bateu|machucou|machucad[oa]|machucar|"
+    r"raiva|medo|alegria|tristeza|frustra[cç][aã]o|"
+    r"engajamento|exclus[aã]o|não\s+voltou\s+a\s+brincar|nao\s+voltou\s+a\s+brincar"
     r")\b",
     re.IGNORECASE,
 )
@@ -67,10 +73,54 @@ _AGGRESSION_PHYSICAL_PT_RE = re.compile(
     r"(?is)\b(bateu|bater\s+no|empurrou|empurrar|socos?|socou|agrediu|agress[aã]o)\b",
 )
 
+# Machucado, choro, recusa de brincar — ML em PT costuma devolver *joy* se o texto for um parágrafo só.
+_INJURY_DISTRESS_PT_RE = re.compile(
+    r"(?is)\b("
+    r"machucou|machucada|machucado|machucar|se\s+machucou|machucad[oa]s?|"
+    r"chorou|chorando|chora|choro|"
+    r"não\s+voltou\s+a\s+brincar|nao\s+voltou\s+a\s+brincar|parou\s+de\s+brincar|"
+    r"com\s+dor|est[aá]\s+com\s+dor|doeu"
+    r")\b",
+)
+
+_JOY_PLAYFUL_PT_RE = re.compile(
+    r"(?is)\b("
+    r"riu\s+muito|brincou\s+bastante|gargalhou|alegre|feliz|radiante|"
+    r"muito\s+engajad[oa]|divertiu-se"
+    r")\b",
+)
+
+_FEAR_ANXIETY_PT_RE = re.compile(
+    r"(?is)\b("
+    r"medo|ansios[oa]|ansiedade|com\s+medo|assustad[oa]|recusa\s+de\s+entrar|"
+    r"respiração\s+r[aá]pida|rosto\s+vermelho"
+    r")\b",
+)
+
+
+def _split_emotion_segment(segment: str) -> list[str]:
+    """Divide um segmento por conectores e vírgulas fortes (frases curtas para o ML)."""
+    s = (segment or "").strip()
+    if not s:
+        return []
+    parts: list[str] = []
+    for block in _EMOTION_CLAUSE_SPLIT.split(s):
+        block = block.strip().strip(",").strip()
+        if not block:
+            continue
+        if "," in block and len(block) > 28:
+            subs = [p.strip().strip(",").strip() for p in block.split(",") if p.strip()]
+            if len(subs) >= 2 and all(len(p) >= 6 for p in subs):
+                parts.extend(subs)
+                continue
+        parts.append(block)
+    return parts
+
 
 def expand_emotion_lines(lines: list[str], *, max_segments: int = 40) -> list[str]:
     """
-    Cada linha do utilizador pode conter várias frases separadas por `.` / `!` / `?`.
+    Cada linha do utilizador pode conter várias frases separadas por `.` / `!` / `?`,
+    vírgulas ou «logo / então / portanto».
     O classificador foi treinado em **frases curtas** (estilo tweet); um parágrafo inteiro
     produz predições pouco fiáveis (muitas vezes puxa para uma única classe, ex. *joy*).
     """
@@ -82,13 +132,49 @@ def expand_emotion_lines(lines: list[str], *, max_segments: int = 40) -> list[st
         chunks = [
             c.strip() for c in _EMOTION_SENTENCE_SPLIT.split(s) if c and c.strip()
         ]
-        if len(chunks) >= 2:
-            out.extend(chunks)
-        else:
-            out.append(s)
+        if len(chunks) < 2:
+            chunks = [s]
+        for chunk in chunks:
+            sub = _split_emotion_segment(chunk)
+            out.extend(sub if sub else [chunk])
         if len(out) >= max_segments:
             return out[:max_segments]
     return out[:max_segments]
+
+
+def apply_pedagogical_emotion_overrides(
+    user_lines: list[str],
+    ml_names: list[str],
+) -> tuple[list[str], list[str]]:
+    """
+    Corrige rótulos do classificador com regras do gabarito pedagógico (texto em PT).
+    Devolve (nomes para a resposta, nota por linha quando houve correção).
+    """
+    corrected: list[str] = []
+    notes: list[str] = []
+    for ul, nm in zip(user_lines, ml_names):
+        blob = (ul or "").strip()
+        out = nm
+        note = ""
+        if _AGGRESSION_PHYSICAL_PT_RE.search(blob):
+            if out != "anger":
+                out = "anger"
+                note = "regra: agressão física → anger"
+        elif _INJURY_DISTRESS_PT_RE.search(blob):
+            if out in ("joy", "love", "surprise"):
+                out = "sadness"
+                note = "regra: machucado/choro → sadness"
+        elif _JOY_PLAYFUL_PT_RE.search(blob):
+            if out in ("sadness", "anger", "fear"):
+                out = "joy"
+                note = "regra: alegria/brincadeira → joy"
+        elif _FEAR_ANXIETY_PT_RE.search(blob):
+            if out in ("joy", "love"):
+                out = "fear"
+                note = "regra: medo/ansiedade → fear"
+        corrected.append(out)
+        notes.append(note)
+    return corrected, notes
 
 
 def _emotion_translate_mode() -> str:
@@ -98,7 +184,7 @@ def _emotion_translate_mode() -> str:
 
 def _emotion_translate_fallback_enabled() -> bool:
     """Se a LLM falhar ou devolver PT, tenta traduzir com `deep-translator` (rede externa)."""
-    raw = (os.getenv("ROTINA_EMOTION_TRANSLATE_FALLBACK") or "1").strip().lower()
+    raw = (os.getenv("ROTINA_EMOTION_TRANSLATE_FALLBACK") or "0").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
@@ -397,7 +483,7 @@ def build_emotion_ml_llm_addon(
         lines_for_ml = user_lines
 
     try:
-        ids, names = bundle.predict_labels(lines_for_ml)
+        ids, ml_names = bundle.predict_labels(lines_for_ml)
     except Exception as e:
         return (
             "### Modelo ML de emoções (pedido pelo utilizador)\n"
@@ -405,24 +491,45 @@ def build_emotion_ml_llm_addon(
             "Explica em **português** sem inventar resultados.\n"
         )
 
+    names, override_notes = apply_pedagogical_emotion_overrides(user_lines, list(ml_names))
+    from modules.emotion_dataset_catalog import EMOTION_LABEL_NAME_TO_ID
+
+    id_rows = [EMOTION_LABEL_NAME_TO_ID.get(n, -1) for n in names]
+
     df = pd.DataFrame(
         {
             "texto_utilizador": user_lines,
             "texto_inferencia_en": lines_for_ml,
-            "id_classe": ids,
+            "emoção_ml": ml_names,
             "emoção": names,
+            "id_classe": id_rows,
+            "ajuste_pedagógico": override_notes,
         }
     )
     table = "```csv\n" + df.to_csv(index=False) + "```"
 
-    aggression_override = ""
+    pedagogy_blurb = ""
     user_blob = "\n".join(user_lines)
     if _AGGRESSION_PHYSICAL_PT_RE.search(user_blob):
-        aggression_override = (
+        pedagogy_blurb += (
             "\n\n---\n**Prioridade pedagógica (sobre a etiqueta ML):** o texto descreve **agressão física** "
             "(p.ex. «bateu no colega»). Para análise e resposta final, trate como **raiva ou frustração** e "
-            "**intervenção imediata e mediação de conflito conforme o Regimento Interno**, mesmo que a coluna "
-            "**`emoção`** acima mostre **tristeza** ou outra classe pouco adequada ao contexto.\n"
+            "**intervenção imediata e mediação de conflito conforme o Regimento Interno**, mesmo que **`emoção_ml`** "
+            "mostre outra classe.\n"
+        )
+    if _INJURY_DISTRESS_PT_RE.search(user_blob) and any(
+        n for n in override_notes if "sadness" in n
+    ):
+        pedagogy_blurb += (
+            "\n\n---\n**Prioridade pedagógica (machucado / choro):** use a coluna **`emoção`** (ajustada), "
+            "não **`emoção_ml`**, quando o ML devolver *joy* ou outra etiqueta inadequada. "
+            "Trate como **tristeza / desconforto**; cite **assepsia e registo no Rotina Viva** quando o "
+            "Guia de Saúde e Segurança estiver no contexto RAG.\n"
+        )
+    if any(override_notes):
+        pedagogy_blurb += (
+            "\n\n---\n**Nota:** a coluna **`emoção`** incorpora correções pedagógicas em português "
+            "(gabarito da escola). **`emoção_ml`** mantém a saída bruta do classificador.\n"
         )
 
     tr_blurb = ""
@@ -492,11 +599,13 @@ def build_emotion_ml_llm_addon(
         "- A coluna **`texto_utilizador`** é o que a pessoa escreveu; **`texto_inferencia_en`** é o que entrou no classificador.\n"
         f"{tr_blurb}"
         "- O classificador foi treinado em **inglês** (dataset dair-ai/emotion); tradução automática reduz mas não elimina erro.\n"
-        "- Responde ao utilizador em **português**: relaciona cada frase original à emoção prevista; "
-        "se as etiquetas de emoção estiverem em inglês, podes **traduzir o nome** da categoria ao explicar.\n\n"
+        "- Responde ao utilizador em **português**: relaciona cada frase original à coluna **`emoção`** "
+        "(não ignores correções pedagógicas em favor de **`emoção_ml`**).\n"
+        "- Se **`emoção_ml`** for *joy* mas o relato for machucado/choro, a resposta final deve ser **tristeza**, "
+        "não alegria.\n\n"
         f"**Ficheiro usado:** `{pkl}`\n\n"
         f"{table}\n"
-        f"{aggression_override}"
+        f"{pedagogy_blurb}"
         f"{persist_blurb}"
     )
 

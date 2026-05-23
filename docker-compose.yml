@@ -56,6 +56,10 @@ services:
       OPENAI_TRANSCRIBE_MODEL: whisper-1
     volumes:
       - ./data:/data
+      # Código no host (evita rebuild ao editar src/ ou correr testes)
+      - ./src:/app/src:ro
+      - ./tests/test_security_rotina.py:/app/tests/test_security_rotina.py:ro
+      - ./scripts:/app/scripts:ro
     restart: unless-stopped
     depends_on:
       - whisper

@@ -5,6 +5,13 @@ Streamlit + DuckDB (CSVs) + ChromaDB (RAG) + LLM/embeddings (API ou Ollama local
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_SRC = Path(__file__).resolve().parent / "src"
+if _SRC.is_dir() and str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
 import logging
 import streamlit as st
 from dotenv import load_dotenv
@@ -27,7 +34,11 @@ try:
 except Exception as e:
     _log_app.warning("init_langfuse_integration: %s", e, exc_info=True)
 
-from core.auth_manager import render_login, try_restore_rotina_browser_session
+from core.auth_manager import (
+    consume_browser_session_from_url,
+    render_login,
+    try_restore_rotina_browser_session,
+)
 from core.database import DATA_DIR
 from modules.rag_index import CHROMA_DIR, INDEX_PROFILE, get_chroma_collection, rag_will_run_full_document_ingest
 from ui.components import init_session_state, render_educador, render_familia, render_gestao
@@ -42,6 +53,7 @@ def main() -> None:
     )
     apply_styles()
     init_session_state()
+    consume_browser_session_from_url()
     try_restore_rotina_browser_session()
     if not st.session_state.get("rotina_authenticated"):
         render_login()

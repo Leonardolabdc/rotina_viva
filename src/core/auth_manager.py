@@ -21,6 +21,13 @@ from core.database import (
     _save_browser_session_token,
     load_rotina_users,
     reset_sleep_meal_report_ui_state,
+    save_rotina_users,
+)
+from core.security import (
+    ROTINA_SESSION_IN_URL,
+    hash_password,
+    password_needs_upgrade,
+    verify_password,
 )
 
 ROTINA_CHAT_QUERY_PARAM = "rotina_chat"
@@ -42,8 +49,23 @@ def _issue_browser_session_token() -> str:
 
 
 def check_password(rec: dict[str, Any], password: str) -> bool:
-    """Comparação com o campo `password` em texto plano do JSON de utilizadores."""
-    return isinstance(rec, dict) and rec.get("password") == password
+    """Verifica senha (bcrypt `password_hash` ou legado texto plano)."""
+    return verify_password(rec, password)
+
+
+def _upgrade_password_hash(username_key: str, plain: str) -> None:
+    users = load_rotina_users()
+    if not isinstance(users, dict):
+        return
+    rec = users.get(username_key)
+    if not isinstance(rec, dict) or not password_needs_upgrade(rec):
+        return
+    rec = dict(rec)
+    rec["password_hash"] = hash_password(plain)
+    rec.pop("password", None)
+    users = dict(users)
+    users[username_key] = rec
+    save_rotina_users(users)
 
 
 def login_user(username_key: str, password: str) -> dict[str, Any] | None:
@@ -55,8 +77,10 @@ def login_user(username_key: str, password: str) -> dict[str, Any] | None:
     if not isinstance(users, dict):
         return None
     rec = users.get(username_key)
-    if not isinstance(rec, dict) or not check_password(rec, password):
+    if not isinstance(rec, dict) or not verify_password(rec, password):
         return None
+    if password_needs_upgrade(rec):
+        _upgrade_password_hash(username_key, password)
     return rec
 
 
@@ -69,14 +93,7 @@ def _clear_browser_session_query_param() -> None:
         pass
 
 
-def try_restore_rotina_browser_session() -> bool:
-    """
-    Após F5 o session_state do Streamlit reinicia; restaura login se a URL tiver
-    `?rotina_session=<uuid>` e existir o ficheiro em disco (token opaco).
-    """
-    if st.session_state.get("rotina_authenticated"):
-        return True
-    raw = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
+def _restore_session_from_token(raw: str) -> bool:
     if not raw or not _is_safe_chat_session_id(raw):
         return False
     path = _browser_session_dir() / f"{raw}.json"
@@ -106,6 +123,7 @@ def try_restore_rotina_browser_session() -> bool:
     st.session_state.rotina_login_username = username
     st.session_state.rotina_role = role
     st.session_state.rotina_user_label = str(rec.get("display_name") or username).strip()
+    st.session_state.rotina_browser_session_token = raw
     if role == "familia":
         try:
             st.session_state.rotina_parent_id_aluno = int(rec.get("id_aluno"))
@@ -118,6 +136,45 @@ def try_restore_rotina_browser_session() -> bool:
     st.session_state.setdefault("rotina_sidebar_screen", "assistant")
     st.session_state.setdefault("rotina_direct_chat_student", None)
     return True
+
+
+def consume_browser_session_from_url() -> None:
+    """
+    Se `?rotina_session=` estiver na URL, restaura login e remove o parâmetro
+    (reduz vazamento do token no histórico/referrer).
+    """
+    if st.session_state.get("rotina_authenticated"):
+        return
+    raw = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
+    if not raw:
+        return
+    if _restore_session_from_token(raw):
+        try:
+            del st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM]
+        except Exception:
+            pass
+
+
+def try_restore_rotina_browser_session() -> bool:
+    """
+    Restaura login: token em `session_state`, ou ficheiro em disco (URL opcional).
+    """
+    if st.session_state.get("rotina_authenticated"):
+        return True
+    tok = st.session_state.get("rotina_browser_session_token")
+    if isinstance(tok, str) and tok.strip():
+        if _restore_session_from_token(tok.strip()):
+            return True
+    raw = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
+    if not raw:
+        return False
+    ok = _restore_session_from_token(raw)
+    if ok and ROTINA_SESSION_IN_URL:
+        try:
+            del st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM]
+        except Exception:
+            pass
+    return ok
 
 
 def _direct_chat_viewer_side(session_role: str) -> str | None:
@@ -256,7 +313,9 @@ def render_login() -> None:
                     st.session_state.pop("_chat_disk_synced_for", None)
                     _tok = _issue_browser_session_token()
                     _save_browser_session_token(_tok, key)
-                    st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM] = _tok
+                    st.session_state.rotina_browser_session_token = _tok
+                    if ROTINA_SESSION_IN_URL:
+                        st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM] = _tok
                     st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
                     st.rerun()
                 else:
@@ -323,4 +382,10 @@ def render_auth_sidebar() -> None:
         st.session_state.pop("_rotina_ml_last_trials", None)
         st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
         st.rerun()
+    try:
+        from ui.security_panel import render_security_sidebar_panel
+
+        render_security_sidebar_panel()
+    except Exception:
+        pass
     st.divider()

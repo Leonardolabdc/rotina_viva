@@ -177,6 +177,19 @@ def load_rotina_users() -> dict[str, Any]:
         return {}
 
 
+def save_rotina_users(users: dict[str, Any]) -> bool:
+    p = DATA_DIR / ROTINA_USERS_FILENAME
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            json.dumps(users, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return True
+    except OSError:
+        return False
+
+
 def _coerce_stored_chat_messages_list(data: list[Any]) -> list[dict[str, Any]] | None:
     out: list[dict[str, Any]] = []
     for m in data:
@@ -378,7 +391,7 @@ def format_sql_rows(rows: list[Any], columns: list[str], max_rows: int = 80) -> 
     return "\n".join(lines)
 
 
-def validate_sql(sql: str) -> bool:
+def _validate_sql_regex(sql: str) -> bool:
     if not sql or not isinstance(sql, str):
         return False
     t = sql.strip()
@@ -393,6 +406,20 @@ def validate_sql(sql: str) -> bool:
         re.IGNORECASE,
     )
     return banned.search(low) is None
+
+
+def validate_sql(sql: str) -> bool:
+    if not sql or not isinstance(sql, str):
+        return False
+    try:
+        from core.sql_validate import validate_select_ast
+
+        ok, _ = validate_select_ast(sql)
+        if ok:
+            return True
+    except Exception:
+        pass
+    return _validate_sql_regex(sql)
 
 
 _ALLOWED_MUTATION_TABLES = frozenset({"info_alunos", "diario_estruturado"})
@@ -456,15 +483,13 @@ def _mutation_sql_has_top_level_semicolon(sql: str) -> bool:
     return False
 
 
-def validate_mutation_sql(sql: str) -> bool:
-    """Permite uma instrução INSERT/UPDATE/DELETE nas tabelas CSV (perfil gestão)."""
+def _validate_mutation_sql_regex(sql: str) -> bool:
     if not sql or not isinstance(sql, str):
         return False
     t = sql.strip().rstrip(";")
     if _mutation_sql_has_top_level_semicolon(t):
         return False
     low = t.lower()
-    # Não usar `\breplace\b`: coincide com `str_replace(...)` e com `OR REPLACE` em DuckDB.
     banned = re.compile(
         r"\b(drop|alter|create|attach|detach|pragma|copy|call|truncate|into\s+sqlite|from\s+sqlite)\b",
         re.IGNORECASE,
@@ -483,6 +508,21 @@ def validate_mutation_sql(sql: str) -> bool:
     if _mutation_allow_csv_tables_relaxed(low):
         return True
     return False
+
+
+def validate_mutation_sql(sql: str) -> bool:
+    """Permite uma instrução INSERT/UPDATE/DELETE nas tabelas CSV (perfil gestão)."""
+    if not sql or not isinstance(sql, str):
+        return False
+    try:
+        from core.sql_validate import validate_mutation_ast
+
+        ok, _ = validate_mutation_ast(sql)
+        if ok:
+            return True
+    except Exception:
+        pass
+    return _validate_mutation_sql_regex(sql)
 
 
 def promote_plan_sql_mutation_field(plan: dict[str, Any]) -> dict[str, Any]:
@@ -1011,6 +1051,9 @@ def run_mutation_and_persist(
     data_dir: Path,
     *,
     allow_delete: bool = True,
+    audit_username: str = "",
+    audit_role: str = "",
+    skip_backup: bool = False,
 ) -> tuple[str, bool, str | None]:
     low = sql.strip().lower()
     if not allow_delete and re.search(r"\bdelete\s+from\b", low):
@@ -1037,13 +1080,52 @@ def run_mutation_and_persist(
             False,
             dup_warn,
         )
+    backup_path: Path | None = None
+    if not skip_backup:
+        try:
+            from core.security import append_mutation_audit, backup_csv_tables_before_mutation
+
+            backup_path = backup_csv_tables_before_mutation(data_dir)
+        except Exception:
+            backup_path = None
     try:
         conn.execute(sql)
         persist_duckdb_tables_to_csv(conn, data_dir)
         msg = "Alteração aplicada e CSVs atualizados."
+        if backup_path is not None:
+            msg += f"\n\n_Backup automático:_ `{backup_path.name}` em `{data_dir.name}/{backup_path.parent.name}/`."
+        try:
+            from core.security import append_mutation_audit
+
+            append_mutation_audit(
+                data_dir,
+                username=audit_username,
+                role=audit_role,
+                sql=sql,
+                ok=True,
+                message=msg,
+                backup_dir=backup_path.name if backup_path else None,
+            )
+        except Exception:
+            pass
         return msg, True, None
     except Exception as e:
-        return _format_mutation_persist_error(e), False, None
+        err = _format_mutation_persist_error(e)
+        try:
+            from core.security import append_mutation_audit
+
+            append_mutation_audit(
+                data_dir,
+                username=audit_username,
+                role=audit_role,
+                sql=sql,
+                ok=False,
+                message=err,
+                backup_dir=backup_path.name if backup_path else None,
+            )
+        except Exception:
+            pass
+        return err, False, None
 
 
 def _verification_selects_after_mutation(mut_sql: str) -> list[str]:

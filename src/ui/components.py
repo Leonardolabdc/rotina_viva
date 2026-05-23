@@ -78,6 +78,27 @@ from modules.services import (
     sleep_meal_report_summary_md,
     sleep_reference_table_df,
 )
+from core.security import (
+    append_hallucination_notice_if_needed,
+    check_llm_message_quota,
+    mask_pii_in_duck_block,
+    mutation_requires_extra_confirmation,
+    record_llm_message,
+    redact_sensitive_output,
+    scan_user_message,
+)
+
+ROTINA_MUTATION_CONFIRM_KEY = "rotina_mutation_confirmed_sql"
+
+
+def _finalize_assistant_text(text: str, duck_block: str) -> str:
+    t = redact_sensitive_output(text or "")
+    return append_hallucination_notice_if_needed(t, duck_block or "")
+
+
+def _render_safe_md(text: str) -> None:
+    st.markdown(text or "", unsafe_allow_html=False)
+
 
 def render_sleep_meal_report_section(
     conn: duckdb.DuckDBPyConnection | None,
@@ -800,6 +821,39 @@ def render_rotina_chat(
             st.session_state.messages.append({"role": "assistant", "content": err})
         else:
             history_for_model = _msgs[:-1]
+            _login_user = str(st.session_state.get("rotina_login_username") or "").strip()
+            _quota_ok, _quota_used, _quota_limit = check_llm_message_quota(
+                _login_user, DATA_DIR
+            )
+            if not _quota_ok:
+                _quota_msg = (
+                    f"Limite diário de **{_quota_limit}** mensagens com IA atingido "
+                    f"({_quota_used} usadas). Tente amanhã ou contacte a gestão."
+                )
+                with st.chat_message("assistant"):
+                    st.error(_quota_msg)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": _quota_msg}
+                )
+                persist_rotina_chat_to_disk(chat_id)
+                render_rag_sidebar_body(rag_sidebar_body)
+                return
+
+            _allowed_in, _block_reason = scan_user_message(user_text)
+            if not _allowed_in:
+                with st.chat_message("assistant"):
+                    st.warning(_block_reason or "Mensagem bloqueada por política de segurança.")
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": _block_reason or "Mensagem bloqueada.",
+                    }
+                )
+                persist_rotina_chat_to_disk(chat_id)
+                render_rag_sidebar_body(rag_sidebar_body)
+                return
+
+            record_llm_message(_login_user, DATA_DIR)
 
             with st.chat_message("assistant"):
                 _handled_name, _ok_name, _msg_name = try_gestao_delete_by_name_intent(
@@ -828,9 +882,12 @@ def render_rotina_chat(
                             duplicate_warn="",
                             duck_block=_vblock,
                         )
-                        st.markdown(_full_name)
+                        _render_safe_md(_finalize_assistant_text(_full_name, ""))
                         st.session_state.messages.append(
-                            {"role": "assistant", "content": _full_name}
+                            {
+                                "role": "assistant",
+                                "content": _finalize_assistant_text(_full_name, ""),
+                            }
                         )
                         persist_rotina_chat_to_disk(chat_id)
                         render_rag_sidebar_body(rag_sidebar_body)
@@ -966,14 +1023,60 @@ def render_rotina_chat(
                             and mut_sql.strip()
                             and _conn is not None
                         ):
+                            _mut_stripped = mut_sql.strip()
+                            _need_confirm, _confirm_reason = (
+                                mutation_requires_extra_confirmation(_mut_stripped)
+                            )
+                            if _need_confirm and (
+                                _confirm_reason != "delete"
+                                or allow_delete_mutations
+                            ):
+                                _confirmed = st.session_state.get(
+                                    ROTINA_MUTATION_CONFIRM_KEY
+                                )
+                                if _confirmed != _mut_stripped:
+                                    if _confirm_reason == "delete":
+                                        st.warning(
+                                            "⚠️ **Confirmação necessária:** esta operação "
+                                            "**apaga dados** nos CSV (irreversível; há backup automático)."
+                                        )
+                                        _btn_label = "Confirmo a exclusão permanente"
+                                    else:
+                                        st.warning(
+                                            "⚠️ **Confirmação necessária:** este UPDATE pode "
+                                            "alterar **vários registos** (não está limitado a um "
+                                            "`id_aluno` ou `id_registro`)."
+                                        )
+                                        _btn_label = "Confirmo a atualização em massa"
+                                    st.code(_mut_stripped, language="sql")
+                                    if st.button(
+                                        _btn_label,
+                                        key="rotina_confirm_mutation_btn",
+                                        type="primary",
+                                    ):
+                                        st.session_state[ROTINA_MUTATION_CONFIRM_KEY] = (
+                                            _mut_stripped
+                                        )
+                                        st.rerun()
+                                    st.info(
+                                        "Nada foi gravado. Confirme no botão acima ou refine o SQL "
+                                        "(ex.: `WHERE id_aluno = 5`)."
+                                    )
+                                    progress_ui.empty()
+                                    render_rag_sidebar_body(rag_sidebar_body)
+                                    return
                             mutation_attempted = True
                             proc.write("Aplicando alteração nos dados (CSV)…")
                             _mmsg, mok, _dup_w = run_mutation_and_persist(
                                 _conn,
-                                mut_sql.strip(),
+                                _mut_stripped,
                                 DATA_DIR,
                                 allow_delete=allow_delete_mutations,
+                                audit_username=_login_user,
+                                audit_role=str(st.session_state.get("rotina_role") or ""),
                             )
+                            if mok:
+                                st.session_state.pop(ROTINA_MUTATION_CONFIRM_KEY, None)
                             mutation_result_msg = _mmsg
                             proc.write(_mmsg)
                             if _dup_w:
@@ -1122,9 +1225,14 @@ def render_rotina_chat(
                         duplicate_warn=mutation_duplicate_warn,
                         duck_block=duck_block,
                     )
-                    st.markdown(full)
+                    _render_safe_md(_finalize_assistant_text(full, duck_block))
                     progress_ui.empty()
-                    st.session_state.messages.append({"role": "assistant", "content": full})
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": _finalize_assistant_text(full, duck_block),
+                        }
+                    )
                     persist_rotina_chat_to_disk(chat_id)
                     render_rag_sidebar_body(rag_sidebar_body)
                     return
@@ -1140,13 +1248,19 @@ def render_rotina_chat(
                     full = _reply_delete_not_persisted_no_mutation(
                         perfil_educador=not allow_delete_mutations
                     )
-                    st.markdown(full)
+                    _render_safe_md(_finalize_assistant_text(full, duck_block))
                     progress_ui.empty()
-                    st.session_state.messages.append({"role": "assistant", "content": full})
+                    st.session_state.messages.append(
+                        {
+                            "role": "assistant",
+                            "content": _finalize_assistant_text(full, duck_block),
+                        }
+                    )
                     persist_rotina_chat_to_disk(chat_id)
                     render_rag_sidebar_body(rag_sidebar_body)
                     return
 
+                _duck_for_llm = mask_pii_in_duck_block(duck_block)
                 _use_crew = bool(st.session_state.get("rotina_crewai_mode")) and (
                     ai_engine.use_openai_compatible_chat()
                 )
@@ -1164,7 +1278,7 @@ def render_rotina_chat(
                         with st.spinner("CrewAI a orquestrar agentes…"):
                             _cr_out = _run_rotina_crew(
                                 user_text=user_text,
-                                duck_block=duck_block,
+                                duck_block=_duck_for_llm,
                                 rag_block=rag_block,
                                 ml_addon=ml_addon or "",
                                 predictive_ml=_pred_ml,
@@ -1173,13 +1287,13 @@ def render_rotina_chat(
                                 collection=collection,
                             )
                         full = _cr_out.final_markdown
-                        st.markdown(full)
+                        _render_safe_md(_finalize_assistant_text(full, duck_block))
                     except Exception as _crew_exc:
                         st.warning(f"CrewAI falhou ({_crew_exc!s}); a usar resposta em **streaming**.")
                         def _gen() -> Generator[str, None, None]:
                             yield from ai_engine.processar_resposta_chat_stream(
                                 user_text,
-                                duck_block,
+                                _duck_for_llm,
                                 rag_block,
                                 history_for_model,
                                 extra_system=_extra_chat or None,
@@ -1201,7 +1315,7 @@ def render_rotina_chat(
                     def _gen() -> Generator[str, None, None]:
                         yield from ai_engine.processar_resposta_chat_stream(
                             user_text,
-                            duck_block,
+                            _duck_for_llm,
                             rag_block,
                             history_for_model,
                             extra_system=_extra_chat or None,
@@ -1215,6 +1329,7 @@ def render_rotina_chat(
                     )
                 progress_ui.empty()
 
+            full = _finalize_assistant_text(full, duck_block)
             _asst_msg: dict[str, Any] = {"role": "assistant", "content": full}
             st.session_state.messages.append(_asst_msg)
 

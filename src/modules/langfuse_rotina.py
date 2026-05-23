@@ -40,7 +40,7 @@ def _strip_env_quotes(raw: str | None) -> str:
 
 
 def langfuse_integration_enabled() -> bool:
-    if os.getenv("ROTINA_LANGFUSE_ENABLED", "true").strip().lower() in (
+    if os.getenv("ROTINA_LANGFUSE_ENABLED", "false").strip().lower() in (
         "0",
         "false",
         "no",
@@ -136,9 +136,15 @@ def configure_litellm_observability() -> None:
 
 
 def _truncate_chat_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    try:
+        from core.security import mask_messages_for_observability
+
+        masked = mask_messages_for_observability(messages)
+    except Exception:
+        masked = messages
     out: list[dict[str, str]] = []
     cap = max(500, min(_MAX_CHARS_PER_MESSAGE, 200_000))
-    for m in messages:
+    for m in masked:
         if not isinstance(m, dict):
             continue
         role = str(m.get("role") or "?")

@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONUTF8=1 \
     PYTHONIOENCODING=utf-8 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONPATH=/app \
+    PYTHONPATH=/app/src \
     ROTINA_DATA_DIR=/data \
     CHROMA_PERSIST_DIR=/data/vector_db \
     LANG=C.UTF-8 \
@@ -26,11 +26,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4,<3" \
     && pip install -r requirements.txt
 
-# Uma linha com vários COPY + destino `./` por vezes não coloca `core/` no sítio esperado; explícito evita `ModuleNotFoundError: core`.
 COPY app.py .
-COPY core/ ./core/
-COPY modules/ ./modules/
-COPY ui/ ./ui/
+COPY src/ ./src/
+COPY tests/ ./tests/
+COPY scripts/ ./scripts/
 
 EXPOSE 8501
 
