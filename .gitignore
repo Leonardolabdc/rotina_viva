@@ -39,11 +39,18 @@ data/_chroma_test_del/
 data/vector_db/
 data/ml_models/*.pkl
 data/.rotina_browser_sessions/
+data/.rotina_audit/
+data/.rotina_csv_backups/
+data/.rotina_usage/
 storage/
 
 # Docker
 docker-data/
 .cache/
+
+# DeepEval (cache/telemetria — gerado ao correr tests/test_rotina_viva.py)
+.deepeval/
+tests/.deepeval/
 
 # Sistema Operacional
 .DS_Store
