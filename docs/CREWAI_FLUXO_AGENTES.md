@@ -1,6 +1,6 @@
 # Fluxo dos agentes CrewAI (Rotina Viva)
 
-Documentação do fluxo implementado em [`modules/rotina_crew/runner.py`](../modules/rotina_crew/runner.py). O planeamento SQL/RAG/mutações da app **mantém-se antes** desta camada; a crew só consome o contexto já gerado e redige a resposta final.
+Documentação do fluxo implementado em [`src/modules/rotina_crew/runner.py`](../src/modules/rotina_crew/runner.py). O planeamento SQL/RAG/mutações da app **mantém-se antes** desta camada; a crew só consome o contexto já gerado e redige a resposta final.
 
 ---
 
@@ -61,7 +61,7 @@ Os ramos **Dados / Emoções / Documentos** só existem se o plano os incluir; q
 | **Documentos** | `especialista_rag` | Especialista RAG (documentos) | Consulta índice Chroma *(se coleção existir)* |
 | **Redação** | `redatora_final` | Redatora — síntese final | — |
 
-Implementação auxiliar das ferramentas: [`modules/rotina_crew/tools.py`](../modules/rotina_crew/tools.py).
+Implementação auxiliar das ferramentas: [`src/modules/rotina_crew/tools.py`](../src/modules/rotina_crew/tools.py).
 
 ---
 
@@ -104,7 +104,7 @@ Para acentos estáveis nos logs dentro do contentor (e na maior parte dos termin
 | `ROTINA_CREW_ALL_SPECIALISTS` | `1` / `true` — força Dados + Emoções + Documentos em todas as mensagens. |
 | `ROTINA_CREW_LOG_FULL` | `1` / `true` — regista output completo de cada tarefa (`trace_full`). |
 
-LLM/API: igual ao chat OpenAI-compatível (`ROTINA_CHAT_PROVIDER`, chaves, `OPENAI_CHAT_MODEL`, etc.), visto [`modules/rotina_crew/llm_factory.py`](../modules/rotina_crew/llm_factory.py).
+LLM/API: igual ao chat OpenAI-compatível (`ROTINA_CHAT_PROVIDER`, chaves, `OPENAI_CHAT_MODEL`, etc.), visto [`src/modules/rotina_crew/llm_factory.py`](../src/modules/rotina_crew/llm_factory.py).
 
 ---
 
@@ -119,7 +119,7 @@ w
 
 | Ficheiro | Função |
 |----------|--------|
-| `modules/rotina_crew/runner.py` | Agentes, tarefas, plano, `kickoff()`, logging |
-| `modules/rotina_crew/tools.py` | DuckDB / ML / RAG como ferramentas |
-| `modules/rotina_crew/llm_factory.py` | LLM CrewAI ↔ env da app |
-| `ui/components.py` | Checkbox e chamada `run_rotina_crew_chat` |
+| `src/modules/rotina_crew/runner.py` | Agentes, tarefas, plano, `kickoff()`, logging |
+| `src/modules/rotina_crew/tools.py` | DuckDB / ML / RAG como ferramentas |
+| `src/modules/rotina_crew/llm_factory.py` | LLM CrewAI ↔ env da app |
+| `src/ui/components.py` | Checkbox e chamada `run_rotina_crew_chat` |
