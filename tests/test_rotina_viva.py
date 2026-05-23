@@ -28,13 +28,13 @@ Usa **gpt-4o-mini** (na API OpenAI nativa) ou **openai/gpt-4o-mini** no OpenRout
 **Avisos no terminal:** tentamos silenciar o Streamlit (`logging` + `warnings`); alguma linha residual pode aparecer e pode ignorar-se em CLI.
 
 Execução (na pasta do projeto):
-  python test_rotina_viva.py
+  python tests/test_rotina_viva.py
 
 Só um caso do golden set (índice 1-based = «Caso N/N» na saída), no PowerShell:
-  $env:ROTINA_EVAL_ONLY_CASE="10"; python test_rotina_viva.py
+  $env:ROTINA_EVAL_ONLY_CASE="10"; python tests/test_rotina_viva.py
 
 Com CrewAI (multi-agente), no PowerShell:
-  $env:ROTINA_EVAL_CREWAI_MODE="1"; python test_rotina_viva.py
+  $env:ROTINA_EVAL_CREWAI_MODE="1"; python tests/test_rotina_viva.py
 """
 
 from __future__ import annotations
@@ -75,10 +75,17 @@ _silence_streamlit_logging()
 logging.getLogger("openai").setLevel(logging.CRITICAL)
 logging.getLogger("deepeval").setLevel(logging.CRITICAL)
 
-# Raiz do projeto no path (para `import modules` mesmo com cwd diferente)
-_PROJECT_ROOT = Path(__file__).resolve().parent
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+# Raiz + src/ no path (para `import modules` / `import core` com cwd diferente)
+_TESTS_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _TESTS_DIR.parent
+_SRC = _PROJECT_ROOT / "src"
+for _p in (_SRC, _PROJECT_ROOT, _TESTS_DIR):
+    if _p.is_dir() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from deepeval_bootstrap import configure_deepeval_home
+
+_DEEPEVAL_HOME = configure_deepeval_home()
 
 THRESHOLD = 0.7
 SENTIMENT_TAG = "Análise de Sentimento"
@@ -618,7 +625,7 @@ def run_inference(user_input: str, *, predictive_ml: bool = False) -> str:
 
 
 def _golden_path() -> Path:
-    return Path(__file__).resolve().parent / "golden_dataset.json"
+    return Path(__file__).resolve().parent / "fixtures" / "golden_dataset.json"
 
 
 def _load_golden() -> list[dict[str, Any]]:
