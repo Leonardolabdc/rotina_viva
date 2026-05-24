@@ -9,8 +9,9 @@ gatherUsageStats = false
 showErrorDetails = true
 
 [theme]
-primaryColor = "#2E7D32"
-backgroundColor = "#FAFAFA"
-secondaryBackgroundColor = "#FFFFFF"
-textColor = "#1A1A1A"
+base = "dark"
+primaryColor = "#4CAF50"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A1D24"
+textColor = "#FAFAFA"
 font = "sans serif"

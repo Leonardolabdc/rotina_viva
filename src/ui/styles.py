@@ -34,7 +34,7 @@ section.main div.block-container {
     padding: 0.35rem 1rem 0.55rem 1rem !important;
     padding-bottom: calc(0.55rem + env(safe-area-inset-bottom, 0px)) !important;
     /* Sombra só para baixo — evita “linha” acima do rodapé (antes: offset Y negativo). */
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.09) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35) !important;
     margin: 0 !important;
     box-sizing: border-box !important;
     left: 0;
