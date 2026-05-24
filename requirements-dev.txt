@@ -1,0 +1,18 @@
+# Desenvolvimento / testes / funcionalidades opcionais pesadas
+-r requirements-prod.txt
+
+# CrewAI multi-agente (ROTINA_ENABLE_CREWAI=true)
+crewai>=0.86,<1
+langchain-openai>=0.2,<1
+litellm==1.74.9
+langfuse>=2.57.0,<3
+
+# Laboratório ML FLAML (ROTINA_ENABLE_ML_LAB=true)
+flaml[automl]>=2.1,<3
+datasets>=2.16,<4
+
+# Avaliação offline (tests/test_rotina_viva.py)
+deepeval>=2.0,<3
+
+# Fallback STT Google (ROTINA_ALLOW_GOOGLE_STT=true)
+SpeechRecognition>=3.10,<4

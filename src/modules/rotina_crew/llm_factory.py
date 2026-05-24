@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from modules import ai_engine
@@ -13,11 +14,18 @@ try:
 except Exception:
     pass
 
-# Cabeçalhos exigidos pelo OpenRouter (telemetria / ranking); alinhados à Etapa 2 (observabilidade).
-_CREW_OPENROUTER_EXTRA_HEADERS: dict[str, str] = {
-    "HTTP-Referer": "https://pucpr.br",
-    "X-Title": "Rotina Viva",
-}
+def _crew_openrouter_extra_headers() -> dict[str, str]:
+    referer = (
+        os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
+        or os.getenv("OPENAI_HTTP_REFERER", "").strip()
+        or "https://github.com/Leonardolabdc/Rotina-Viva"
+    )
+    title = (
+        os.getenv("OPENROUTER_APP_TITLE", "").strip()
+        or os.getenv("OPENAI_APP_TITLE", "").strip()
+        or "Rotina Viva"
+    )
+    return {"HTTP-Referer": referer, "X-Title": title}
 
 
 def _crew_litellm_model_name() -> str:
@@ -64,7 +72,7 @@ def build_crew_chat_llm(
         extra["metadata"] = litellm_meta
     base_l = (ai_engine.OPENAI_BASE_URL or "").strip().lower()
     if ai_engine.ROTINA_CHAT_PROVIDER == "openrouter" or "openrouter.ai" in base_l:
-        extra["extra_headers"] = dict(_CREW_OPENROUTER_EXTRA_HEADERS)
+        extra["extra_headers"] = _crew_openrouter_extra_headers()
         # Último chunk de stream com usage (OpenRouter → LiteLLM → Langfuse); reforço além do CrewAI.
         extra["stream_options"] = {"include_usage": True}
 

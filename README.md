@@ -92,7 +92,7 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # Linux/macOS
 
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env            # Linux/macOS — no Windows: copy .env.example .env
 ```
 
@@ -175,6 +175,15 @@ Após copiar `data/rotina_users.example.json` para `data/rotina_users.json`, use
 3. **Educador / Gestão** — registe sono, refeições e higiene via texto ou voz.
 4. **Família** — consulte informações do aluno vinculado ao perfil.
 5. **Sidebar** — opções como CrewAI (multi-agente) e ML de emoções, conforme o perfil.
+
+### Deploy na nuvem (Streamlit Community Cloud)
+
+Para entregar o trabalho com URL pública **e agentes CrewAI**, siga [docs/DEPLOY.md](docs/DEPLOY.md):
+
+1. Push do repositório para o GitHub.
+2. [share.streamlit.io](https://share.streamlit.io) → **New app** → `app.py`.
+3. Cole os **Secrets** de [`.streamlit/secrets.toml.example`](.streamlit/secrets.toml.example).
+4. (Recomendado) Pré-indexe o RAG: `python scripts/build_rag_index.py` e `git add -f data/vector_db/`.
 
 ---
 

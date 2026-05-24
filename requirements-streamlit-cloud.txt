@@ -1,0 +1,8 @@
+# Streamlit Community Cloud — app + RAG + CrewAI (agentes)
+-r requirements-prod.txt
+
+# Multi-agente (toggle na sidebar)
+crewai>=0.86,<1
+langchain-openai>=0.2,<1
+litellm==1.74.9
+langfuse>=2.57.0,<3

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rotina Viva</title>
+  <meta name="description" content="Assistente inteligente para rotinas em escolas infantis — comunicação escola e famílias." />
+  <style>
+    :root { --green: #2d6a4f; --bg: #f8faf9; --text: #1b4332; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      padding: 2rem;
+    }
+    main { max-width: 520px; text-align: center; }
+    h1 { font-size: 2rem; margin-bottom: .5rem; }
+    p { line-height: 1.6; opacity: .9; }
+    a.btn {
+      display: inline-block; margin-top: 1.5rem; padding: .85rem 1.4rem;
+      background: var(--green); color: #fff; text-decoration: none;
+      border-radius: 8px; font-weight: 600;
+    }
+    a.btn:hover { filter: brightness(1.08); }
+    .note { font-size: .85rem; margin-top: 2rem; opacity: .7; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>🌿 Rotina Viva</h1>
+    <p>Assistente inteligente para escolas infantis — registo de rotina, consultas sobre documentos da escola e comunicação com famílias.</p>
+    <a class="btn" id="app-link" href="https://github.com/Leonardolabdc/Rotina-Viva#-como-executar-o-projeto">Ver como executar</a>
+    <p class="note">Substitua o link acima pela URL da app em produção (Streamlit Cloud, Railway, etc.). O Vercel hospeda só esta página estática.</p>
+</body>
+</html>

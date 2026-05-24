@@ -38,7 +38,9 @@ services:
       start_period: 240s
 
   rotina-viva:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
     container_name: rotina-viva
     ports:
       - "8501:8501"

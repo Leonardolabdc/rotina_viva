@@ -1,0 +1,46 @@
+# Produção — imagem slim (requirements-prod.txt), sem volumes de código
+services:
+  whisper:
+    image: hwdsl2/whisper-server:latest
+    container_name: rotina-whisper
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: base
+      WHISPER_LANGUAGE: pt
+      WHISPER_PORT: "9000"
+      WHISPER_THREADS: "4"
+      WHISPER_VAD_FILTER: "relaxed"
+      WHISPER_EMPTY_RETRY: "true"
+      WHISPER_NO_SPEECH_THRESHOLD: "0.42"
+    volumes:
+      - whisper-models:/var/lib/whisper
+      - ./docker/whisper_api_server.py:/opt/src/api_server.py:ro
+    ports:
+      - "127.0.0.1:9000:9000"
+
+  rotina-viva:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rotina-viva
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      CREWAI_DISABLE_TELEMETRY: "true"
+      ROTINA_DATA_DIR: /data
+      CHROMA_PERSIST_DIR: /data/vector_db
+      OPENAI_TRANSCRIBE_BASE_URL: http://whisper:9000/v1
+      OPENAI_TRANSCRIBE_MODEL: whisper-1
+      ROTINA_ENABLE_CREWAI: "false"
+      ROTINA_ENABLE_ML_LAB: "false"
+      ROTINA_LANGFUSE_ENABLED: "false"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    depends_on:
+      - whisper
+
+volumes:
+  whisper-models:

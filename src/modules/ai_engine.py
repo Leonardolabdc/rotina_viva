@@ -486,7 +486,7 @@ def _openai_headers() -> dict[str, str]:
         or os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
     )
     if not referer and is_openrouter:
-        referer = "https://pucpr.br"
+        referer = "https://github.com/Leonardolabdc/Rotina-Viva"
     if referer:
         h["HTTP-Referer"] = referer
     title = (

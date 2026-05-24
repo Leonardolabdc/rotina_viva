@@ -18,6 +18,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from core.cloud_bootstrap import apply_cloud_bootstrap
+
+apply_cloud_bootstrap()
+
 try:
     from modules.langfuse_rotina import configure_litellm_observability
 

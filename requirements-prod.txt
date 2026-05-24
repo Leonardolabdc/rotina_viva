@@ -1,0 +1,14 @@
+# Produção — app Streamlit (OpenRouter + RAG + DuckDB)
+streamlit>=1.40,<2
+pandas>=2.0,<3
+python-dotenv>=1.0,<2
+bcrypt>=4.0,<5
+sqlparse>=0.5,<0.6
+duckdb>=1.0,<2
+chromadb>=0.5.5,<2
+langchain-text-splitters>=0.3,<1
+pypdf>=4.0,<6
+httpx>=0.27,<1
+openai>=1.70.0,<2.0.0
+scikit-learn>=1.3,<2
+deep-translator>=1.11,<2

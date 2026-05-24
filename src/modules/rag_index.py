@@ -162,14 +162,12 @@ PDF_NAMES = (
     "regimento_interno_escola.pdf",
     "planejamento_nutricional_semanal.pdf",
     "guia_procedimentos_saude_seguranca.pdf",
-    "PPP_DED_IBC.pdf",
     "ppp_projeto_político_pedagógico.pdf",
 )
 
 # RAG: perguntas de identidade institucional buscam só nestes PDFs (evita saúde/cardápio por menção genérica a “escola”).
 RAG_IDENTITY_SOURCES: tuple[str, ...] = (
     "regimento_interno_escola.pdf",
-    "PPP_DED_IBC.pdf",
     "ppp_projeto_político_pedagógico.pdf",
 )
 

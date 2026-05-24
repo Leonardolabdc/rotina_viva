@@ -52,6 +52,9 @@ docker-data/
 .deepeval/
 tests/.deepeval/
 
+# Relatórios gerados localmente
+data/SEGURANCA_ANTES_DEPOIS.md
+
 # Sistema Operacional
 .DS_Store
 Thumbs.db

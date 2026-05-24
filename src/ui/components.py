@@ -42,6 +42,7 @@ from core.database import (
     validate_mutation_sql,
     _duckdb_csv_reload_token,
 )
+from core.feature_flags import ROTINA_ENABLE_CREWAI, ROTINA_ENABLE_ML_LAB
 from modules import ai_engine
 from modules import ml_emotion_chat
 from modules.chat_service import (
@@ -529,11 +530,13 @@ def render_chat_sidebar_internals() -> Any:
     role_lc = str(st.session_state.get("rotina_role") or "").strip().lower()
 
     if role_lc in ("gestao", "educador"):
-        _staff_opts = ("auto", "structured", "documents", "ml_traditional")
-        _staff_labels = {
-            **_labels,
-            "ml_traditional": "ML clássico (laboratório FLAML — treino e exportar .pkl)",
-        }
+        _staff_opts: tuple[str, ...] = ("auto", "structured", "documents")
+        _staff_labels = dict(_labels)
+        if ROTINA_ENABLE_ML_LAB:
+            _staff_opts = ("auto", "structured", "documents", "ml_traditional")
+            _staff_labels["ml_traditional"] = (
+                "ML clássico (laboratório FLAML — treino e exportar .pkl)"
+            )
         if "rotina_assistant_view_choice" not in st.session_state:
             st.session_state.rotina_assistant_view_choice = st.session_state.get(
                 "data_source_mode", "auto"
@@ -575,30 +578,32 @@ def render_chat_sidebar_internals() -> Any:
                 "Para consultar só tabelas, prefira **Só dados estruturados** ou **Automático**."
             )
     st.divider()
-    st.markdown("**CrewAI — multi-agente (paralelo)**")
-    try:
-        from modules.rotina_crew.runner import crewai_import_ok as _rotina_crew_dep_ok
+    if ROTINA_ENABLE_CREWAI:
+        st.markdown("**CrewAI — multi-agente (paralelo)**")
+        try:
+            from modules.rotina_crew.runner import crewai_import_ok as _rotina_crew_dep_ok
 
-        _crew_dep = _rotina_crew_dep_ok()
-    except Exception:
-        _crew_dep = False
-    if not ai_engine.use_openai_compatible_chat():
-        st.caption(
-            "CrewAI neste modo usa LangChain OpenAI: defina `ROTINA_CHAT_PROVIDER=openai` ou `openrouter` e chave API. "
-            "Com **Ollama**, mantenha esta opção desligada."
+            _crew_dep = _rotina_crew_dep_ok()
+        except Exception:
+            _crew_dep = False
+        if not ai_engine.use_openai_compatible_chat():
+            st.caption(
+                "CrewAI neste modo usa LangChain OpenAI: defina `ROTINA_CHAT_PROVIDER=openai` ou `openrouter` e chave API. "
+                "Com **Ollama**, mantenha esta opção desligada."
+            )
+        elif not _crew_dep:
+            st.caption("Instale: `pip install crewai langchain-openai`.")
+        st.checkbox(
+            "Orquestrar resposta com **CrewAI**",
+            key="rotina_crewai_mode",
+            disabled=not (_crew_dep and ai_engine.use_openai_compatible_chat()),
+            help=(
+                "Receção primeiro; especialistas relevantes seguem **em paralelo**; síntese final no fim. "
+                "Mais lento e mais caro em tokens. Logs por agente: `rotina.crew` "
+                "(Docker: `docker logs -f`; Streamlit Cloud: Manage app → Logs). "
+                "O planeamento SQL/RAG/mutações mantém-se antes da crew."
+            ),
         )
-    elif not _crew_dep:
-        st.caption("Instale: `pip install crewai langchain-openai`.")
-    st.checkbox(
-        "Orquestrar resposta com **CrewAI**",
-        key="rotina_crewai_mode",
-        disabled=not (_crew_dep and ai_engine.use_openai_compatible_chat()),
-        help=(
-            "Receção primeiro; especialistas relevantes seguem **em paralelo**; síntese final no fim. "
-            "Mais lento e mais caro em tokens. Por agente: logs (`rotina.crew`, ex. `docker logs -f`). "
-            "O planeamento SQL/RAG/mutações mantém-se antes da crew."
-        ),
-    )
     if st.button("Limpar conversa", key="rotina_clear_chat_btn"):
         _old_cid = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
         if _old_cid and _is_safe_chat_session_id(_old_cid):
@@ -1261,8 +1266,10 @@ def render_rotina_chat(
                     return
 
                 _duck_for_llm = mask_pii_in_duck_block(duck_block)
-                _use_crew = bool(st.session_state.get("rotina_crewai_mode")) and (
-                    ai_engine.use_openai_compatible_chat()
+                _use_crew = (
+                    ROTINA_ENABLE_CREWAI
+                    and bool(st.session_state.get("rotina_crewai_mode"))
+                    and ai_engine.use_openai_compatible_chat()
                 )
                 _crew_ok = False
                 try:
@@ -1367,6 +1374,10 @@ def _render_gestao_ou_educador(
         )
 
     if _screen == "ml_traditional":
+        if not ROTINA_ENABLE_ML_LAB:
+            st.session_state.rotina_sidebar_screen = "assistant"
+            st.warning("Laboratório ML desativado neste ambiente.")
+            st.rerun()
         from ui.ml_traditional_page import render_ml_traditional_page
 
         _render_rotina_logo_header()
