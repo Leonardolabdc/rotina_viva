@@ -1,0 +1,16 @@
+{
+  "model_id": "emotion-flaml-v1",
+  "artifact": "emotion_flaml_bundle.pkl",
+  "dataset_id": "dair-ai/emotion",
+  "dataset_config": "split",
+  "description": "TF-IDF + classificador FLAML (lrl1). Treinado em dataset público genérico — sem dados de crianças ou escola.",
+  "sklearn_version_train": "1.8.0",
+  "metrics": {
+    "test_accuracy": 0.8965,
+    "test_macro_f1": 0.8476884432580812,
+    "val_macro_f1": 0.8745195596959481,
+    "best_estimator": "lrl1"
+  },
+  "sha256": "ec0c1fb991c76f7993a46d9a3804a7ca2fc9dd635fba575b37e297d887575c39",
+  "production_note": "Fase 0 académica — artefacto público. Em produção escalar: repo privado, URL secreta ou formato ONNX/skops."
+}

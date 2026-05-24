@@ -37,7 +37,9 @@ data/.rotina_chat/
 data/rotina_users.json
 data/_chroma_test_del/
 data/vector_db/
+# Modelos ML — ignorar experimentais; bundle de produção (dataset público) pode ir ao repo
 data/ml_models/*.pkl
+!data/ml_models/emotion_flaml_bundle.pkl
 data/.rotina_browser_sessions/
 data/.rotina_audit/
 data/.rotina_csv_backups/
