@@ -11,7 +11,28 @@ showErrorDetails = true
 [theme]
 base = "dark"
 primaryColor = "#4CAF50"
+font = "sans serif"
+
+# Light e dark com as MESMAS cores — se o browser guardou "Light" (☰ → Settings),
+# a app continua escura em vez de voltar ao branco após o 1.º frame.
+[theme.light]
+primaryColor = "#4CAF50"
 backgroundColor = "#0E1117"
 secondaryBackgroundColor = "#1A1D24"
 textColor = "#FAFAFA"
-font = "sans serif"
+
+[theme.light.sidebar]
+backgroundColor = "#161B22"
+secondaryBackgroundColor = "#1A1D24"
+textColor = "#FAFAFA"
+
+[theme.dark]
+primaryColor = "#4CAF50"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A1D24"
+textColor = "#FAFAFA"
+
+[theme.dark.sidebar]
+backgroundColor = "#161B22"
+secondaryBackgroundColor = "#1A1D24"
+textColor = "#FAFAFA"

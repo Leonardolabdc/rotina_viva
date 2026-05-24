@@ -6,12 +6,35 @@ import streamlit as st
 
 
 def apply_styles() -> None:
-    """Espaço no fundo do conteúdo + estilo da barra fixa (microfone + chat) e expanders."""
+    """Espaço no fundo do conteúdo + tema escuro fixo + barra fixa (microfone + chat)."""
     st.markdown(
         """
 <style>
+/* Tema escuro fixo (Cloud: evita flash claro quando o browser guardou Light). */
+:root {
+    --background-color: #0e1117;
+    --secondary-background-color: #1a1d24;
+    --text-color: #fafafa;
+    --primary-color: #4caf50;
+}
+.stApp,
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > section.main {
+    background-color: #0e1117 !important;
+    color: #fafafa !important;
+}
+[data-testid="stHeader"] {
+    background-color: rgba(14, 17, 23, 0.92) !important;
+}
+section[data-testid="stSidebar"],
+section[data-testid="stSidebar"] > div {
+    background-color: #161b22 !important;
+    color: #fafafa !important;
+}
 section.main div.block-container {
     padding-bottom: 5.85rem !important;
+    background-color: transparent !important;
+    color: #fafafa !important;
 }
 /*
  * Barra fixa: bases alinhadas — fundo do áudio com o fundo do campo de texto (flex-end).
