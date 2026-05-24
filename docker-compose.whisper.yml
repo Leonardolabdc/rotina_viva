@@ -1,0 +1,44 @@
+# Whisper STT — serviço externo (Oracle VM, Railway, etc.)
+# API compatível com OpenAI: POST {BASE}/v1/audio/transcriptions
+#
+# Uso na VM:
+#   docker compose -f docker-compose.whisper.yml up -d
+#   curl http://127.0.0.1:9000/docs
+#
+# Streamlit Cloud (Secrets):
+#   OPENAI_TRANSCRIBE_BASE_URL = "http://IP-PUBLICO-VM:9000/v1"
+#   ou ROTINA_TRANSCRIBE_SERVICE_URL (alias)
+
+services:
+  whisper:
+    image: hwdsl2/whisper-server:latest
+    container_name: rotina-whisper
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: base
+      WHISPER_LANGUAGE: pt
+      WHISPER_PORT: "9000"
+      WHISPER_THREADS: "4"
+      WHISPER_VAD_FILTER: "relaxed"
+      WHISPER_EMPTY_RETRY: "true"
+      WHISPER_NO_SPEECH_THRESHOLD: "0.42"
+    volumes:
+      - whisper-models:/var/lib/whisper
+      - ./docker/whisper_api_server.py:/opt/src/api_server.py:ro
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/docs', timeout=3)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 240s
+
+volumes:
+  whisper-models:

@@ -5,6 +5,7 @@ Chaves e URLs via os.getenv, alinhado ao comportamento anterior em app.py.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -76,14 +77,17 @@ def _normalize_transcribe_base_url(raw: str) -> str:
 
 
 OPENAI_TRANSCRIBE_BASE_URL = _normalize_transcribe_base_url(
-    os.getenv("OPENAI_TRANSCRIBE_BASE_URL", "https://api.openai.com/v1")
+    os.getenv("OPENAI_TRANSCRIBE_BASE_URL", "")
 )
 OPENAI_TRANSCRIBE_MODEL = os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
 _stt_key_raw = os.getenv("OPENAI_TRANSCRIBE_API_KEY", "").strip()
+_transcribe_base_l = (OPENAI_TRANSCRIBE_BASE_URL or "").lower()
 if _stt_key_raw:
     OPENAI_TRANSCRIBE_API_KEY = _stt_key_raw
-elif "api.openai.com" in OPENAI_TRANSCRIBE_BASE_URL:
+elif "api.openai.com" in _transcribe_base_l:
     OPENAI_TRANSCRIBE_API_KEY = OPENAI_API_KEY
+elif "openrouter.ai" in _transcribe_base_l:
+    OPENAI_TRANSCRIBE_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip() or OPENAI_API_KEY
 else:
     OPENAI_TRANSCRIBE_API_KEY = ""
 
@@ -1144,12 +1148,134 @@ def rotina_st_audio_format(audio_bytes: bytes) -> str:
     }.get(mime, "audio/wav")
 
 
-def _transcribe_whisper_http(audio_bytes: bytes, filename: str) -> tuple[str | None, str | None]:
+def _is_openrouter_transcribe_base(base: str) -> bool:
+    return "openrouter.ai" in (base or "").strip().lower()
+
+
+def _openrouter_stt_model_name() -> str:
+    """OpenRouter STT exige id tipo `openai/whisper-1`."""
+    model = (OPENAI_TRANSCRIBE_MODEL or "openai/whisper-1").strip()
+    if not model:
+        return "openai/whisper-1"
+    if "/" in model:
+        return model
+    return f"openai/{model}"
+
+
+def _openrouter_audio_format(mime: str, upload_name: str) -> str:
+    """Formato curto exigido por OpenRouter (`wav`, `webm`, …)."""
+    m = (mime or "").lower().split(";")[0].strip()
+    by_mime = {
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/webm": "webm",
+        "audio/ogg": "ogg",
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/mp4": "m4a",
+        "audio/x-m4a": "m4a",
+        "audio/flac": "flac",
+        "audio/aac": "aac",
+    }
+    if m in by_mime:
+        return by_mime[m]
+    low = (upload_name or "").lower()
+    for ext in ("webm", "wav", "ogg", "mp3", "m4a", "flac", "aac"):
+        if low.endswith(f".{ext}"):
+            return ext
+    return "webm"
+
+
+def _transcribe_openrouter_headers() -> dict[str, str]:
+    key = (OPENAI_TRANSCRIBE_API_KEY or OPENAI_API_KEY or "").strip()
+    h: dict[str, str] = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    referer = (
+        os.getenv("OPENROUTER_HTTP_REFERER", "").strip()
+        or os.getenv("OPENAI_HTTP_REFERER", "").strip()
+        or "https://github.com/Leonardolabdc/Rotina-Viva"
+    )
+    title = (
+        os.getenv("OPENROUTER_APP_TITLE", "").strip()
+        or os.getenv("OPENAI_APP_TITLE", "").strip()
+        or "Rotina Viva"
+    )
+    if referer:
+        h["HTTP-Referer"] = referer
+    if title:
+        h["X-Title"] = title
+    return h
+
+
+def _transcribe_openrouter_http(audio_bytes: bytes, filename: str) -> tuple[str | None, str | None]:
+    """OpenRouter STT: POST JSON com áudio base64 (não multipart)."""
+    if not audio_bytes:
+        return None, "Nenhum dado de áudio para enviar ao OpenRouter STT."
+    base = (OPENAI_TRANSCRIBE_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return None, "OpenRouter STT: `OPENAI_TRANSCRIBE_BASE_URL` não configurada."
+    key = (OPENAI_TRANSCRIBE_API_KEY or OPENAI_API_KEY or "").strip()
+    if not key:
+        return None, (
+            "OpenRouter STT: defina `OPENROUTER_API_KEY` ou `OPENAI_TRANSCRIBE_API_KEY` nos Secrets."
+        )
+    upload_name, mime = whisper_upload_name_and_mime(audio_bytes, filename)
+    fmt = _openrouter_audio_format(mime, upload_name)
+    url = f"{base}/audio/transcriptions"
+    payload = {
+        "model": _openrouter_stt_model_name(),
+        "input_audio": {
+            "data": base64.b64encode(audio_bytes).decode("ascii"),
+            "format": fmt,
+        },
+        "language": "pt",
+    }
+    try:
+        r = httpx.post(
+            url,
+            headers=_transcribe_openrouter_headers(),
+            json=payload,
+            timeout=httpx.Timeout(180.0, connect=30.0),
+        )
+        if r.status_code >= 400:
+            detail = (r.text or "").strip().replace("\n", " ")
+            if len(detail) > 400:
+                detail = detail[:400] + "…"
+            return None, f"OpenRouter STT respondeu {r.status_code}: {detail or 'sem detalhe'}"
+        try:
+            out = r.json()
+        except json.JSONDecodeError:
+            raw = (r.text or "").strip()
+            if not raw:
+                return None, "__EMPTY_TRANSCRIPT__"
+            return raw, None
+        if not isinstance(out, dict):
+            return None, f"OpenRouter STT devolveu JSON inesperado: {type(out).__name__}"
+        t = (out.get("text") or "").strip()
+        if not t:
+            return None, "__EMPTY_TRANSCRIPT__"
+        return t, None
+    except httpx.ConnectError:
+        return None, f"Não foi possível ligar ao OpenRouter STT em `{base}`."
+    except httpx.TimeoutException:
+        return None, "Tempo esgotado ao transcrever via OpenRouter; tente de novo."
+    except Exception as e:
+        return None, f"Erro OpenRouter STT: {type(e).__name__}: {e!s}"[:400]
+
+
+def _transcribe_whisper_multipart(audio_bytes: bytes, filename: str) -> tuple[str | None, str | None]:
+    """Whisper self-hosted ou OpenAI API (multipart/form-data)."""
     if not audio_bytes:
         return None, "Nenhum dado de áudio para enviar ao Whisper."
     base = (OPENAI_TRANSCRIBE_BASE_URL or "").strip().rstrip("/")
     if not base:
-        return None, "URL de transcrição não configurada (`OPENAI_TRANSCRIBE_BASE_URL`)."
+        return None, (
+            "Transcrição de voz não configurada. "
+            "Streamlit Cloud: use OpenRouter (`OPENAI_TRANSCRIBE_BASE_URL=https://openrouter.ai/api/v1`) "
+            "ou Whisper externo — ver docs/DEPLOY_WHISPER.md."
+        )
     key = (OPENAI_TRANSCRIBE_API_KEY or "").strip()
     upload_name, mime = whisper_upload_name_and_mime(audio_bytes, filename)
     url = f"{base}/audio/transcriptions"
@@ -1200,6 +1326,13 @@ def _transcribe_whisper_http(audio_bytes: bytes, filename: str) -> tuple[str | N
         return None, f"Erro ao chamar Whisper: {type(e).__name__}: {e!s}"[:400]
 
 
+def _transcribe_whisper_http(audio_bytes: bytes, filename: str) -> tuple[str | None, str | None]:
+    base = (OPENAI_TRANSCRIBE_BASE_URL or "").strip().rstrip("/")
+    if _is_openrouter_transcribe_base(base):
+        return _transcribe_openrouter_http(audio_bytes, filename)
+    return _transcribe_whisper_multipart(audio_bytes, filename)
+
+
 def _transcribe_google_sr(audio_bytes: bytes) -> str | None:
     try:
         import speech_recognition as sr  # type: ignore[import-untyped]
@@ -1235,11 +1368,11 @@ def transcribe_voice_bytes(audio_bytes: bytes, filename: str) -> tuple[str | Non
         return None, werr
     return (
         None,
-        "Não foi possível transcrever o áudio (sem resposta útil do Whisper nem do fallback Google). "
-        "Confirme o serviço **Whisper** (`docker compose up`, `docker logs rotina-whisper`). "
-        "Se corre o Streamlit **no PC** (fora do Docker), no `.env` use "
-        "`OPENAI_TRANSCRIBE_BASE_URL=http://127.0.0.1:9000/v1` (não `http://whisper:...`). "
-        "Alternativa: API OpenAI com `OPENAI_TRANSCRIBE_BASE_URL` e `OPENAI_TRANSCRIBE_API_KEY`.",
+        "Não foi possível transcrever o áudio. "
+        f"{werr or 'Sem resposta do serviço STT.'} "
+        "Cloud: OpenRouter STT (`OPENAI_TRANSCRIBE_BASE_URL=https://openrouter.ai/api/v1`) "
+        "ou Whisper VM — `docs/DEPLOY_WHISPER.md`. "
+        "Local/Docker: `OPENAI_TRANSCRIBE_BASE_URL=http://127.0.0.1:9000/v1`.",
     )
 
 

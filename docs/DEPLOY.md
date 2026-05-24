@@ -64,6 +64,10 @@ ROTINA_ENABLE_CREWAI = "true"
 CREWAI_DISABLE_TELEMETRY = "true"
 ROTINA_ENABLE_ML_LAB = "false"
 ROTINA_LANGFUSE_ENABLED = "false"
+
+# Voz — OpenRouter STT (mesma chave; bootstrap preenche se omitir as 2 linhas abaixo)
+OPENAI_TRANSCRIBE_BASE_URL = "https://openrouter.ai/api/v1"
+OPENAI_TRANSCRIBE_MODEL = "openai/whisper-1"
 ```
 
 ### 5. Deploy e teste
@@ -96,17 +100,21 @@ Criados automaticamente pelo `cloud_bootstrap` se `data/rotina_users.json` não 
 |------|------|
 | **RAM** | CrewAI + Chroma + LiteLLM — se a app reiniciar por OOM, reduza chunks RAG ou desligue ML lab (`ROTINA_ENABLE_ML_LAB=false`, já default). |
 | **Disco** | Efémero — CSV editados e Chroma podem resetar após redeploy/reboot. |
-| **Whisper / voz** | Não há container `whisper` no Cloud. Configure `OPENAI_TRANSCRIBE_BASE_URL` para Oracle VM ou omita (chat por texto funciona). |
+| **Whisper / voz** | OpenRouter STT ou VM — [DEPLOY_WHISPER.md](DEPLOY_WHISPER.md) |
 | **Cold start** | 30–90 s após inactividade. |
 
-## Voz (opcional — Oracle VM)
+## Voz (OpenRouter STT — recomendado)
 
-Quando tiver Whisper na VM:
+Guia: **[DEPLOY_WHISPER.md](DEPLOY_WHISPER.md)**.
+
+Com `OPENROUTER_API_KEY` nos Secrets, o bootstrap activa STT automaticamente. Opcional:
 
 ```toml
-OPENAI_TRANSCRIBE_BASE_URL = "https://SEU-IP-OU-DOMINIO/v1"
-OPENAI_TRANSCRIBE_MODEL = "whisper-1"
+OPENAI_TRANSCRIBE_BASE_URL = "https://openrouter.ai/api/v1"
+OPENAI_TRANSCRIBE_MODEL = "openai/whisper-1"
 ```
+
+Alternativa grátis: Whisper numa VM (`docker-compose.whisper.yml`).
 
 ## Desenvolvimento local vs Cloud
 

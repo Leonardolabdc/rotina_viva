@@ -101,6 +101,24 @@ def ensure_rotina_users_file(data_dir: Path) -> None:
         pass
 
 
+def apply_transcribe_env() -> None:
+    """
+    STT externo (escalável): alias ROTINA_TRANSCRIBE_* → OPENAI_TRANSCRIBE_*.
+    Remove URLs Docker internas inválidas fora do contentor.
+    """
+    svc = (os.getenv("ROTINA_TRANSCRIBE_SERVICE_URL") or "").strip().rstrip("/")
+    if svc and not os.getenv("OPENAI_TRANSCRIBE_BASE_URL", "").strip():
+        os.environ["OPENAI_TRANSCRIBE_BASE_URL"] = svc
+
+    tkey = (os.getenv("ROTINA_TRANSCRIBE_API_KEY") or "").strip()
+    if tkey and not os.getenv("OPENAI_TRANSCRIBE_API_KEY", "").strip():
+        os.environ["OPENAI_TRANSCRIBE_API_KEY"] = tkey
+
+    transcribe = os.getenv("OPENAI_TRANSCRIBE_BASE_URL", "").strip().lower()
+    if "whisper:" in transcribe or transcribe.endswith("//whisper:9000/v1"):
+        os.environ["OPENAI_TRANSCRIBE_BASE_URL"] = svc or ""
+
+
 def apply_cloud_runtime_defaults() -> None:
     """Defaults seguros para Community Cloud com agentes activos."""
     os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
@@ -109,10 +127,7 @@ def apply_cloud_runtime_defaults() -> None:
     os.environ.setdefault("ROTINA_ENABLE_ML_LAB", "false")
     os.environ.setdefault("ROTINA_LANGFUSE_ENABLED", "false")
 
-    # Whisper Docker interno não existe no Cloud — evita URL quebrada herdada de .env local.
-    transcribe = os.getenv("OPENAI_TRANSCRIBE_BASE_URL", "").strip().lower()
-    if "whisper:" in transcribe or transcribe.endswith("//whisper:9000/v1"):
-        os.environ.pop("OPENAI_TRANSCRIBE_BASE_URL", None)
+    apply_transcribe_env()
 
     # OpenRouter por defeito se houver chave mas provider em ollama
     if os.getenv("OPENROUTER_API_KEY", "").strip():
@@ -121,6 +136,10 @@ def apply_cloud_runtime_defaults() -> None:
         if not os.getenv("ROTINA_EMBED_PROVIDER", "").strip():
             os.environ.setdefault("ROTINA_EMBED_PROVIDER", "openrouter")
         os.environ.setdefault("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+        # STT OpenRouter (JSON base64) — mesma chave; evita VM Whisper na Fase 0
+        if not os.getenv("OPENAI_TRANSCRIBE_BASE_URL", "").strip():
+            os.environ.setdefault("OPENAI_TRANSCRIBE_BASE_URL", "https://openrouter.ai/api/v1")
+        os.environ.setdefault("OPENAI_TRANSCRIBE_MODEL", "openai/whisper-1")
 
     if _is_truthy(os.getenv("ROTINA_LANGFUSE_ENABLED")):
         os.environ.setdefault("LITELLM_SUCCESS_CALLBACKS", "langfuse")

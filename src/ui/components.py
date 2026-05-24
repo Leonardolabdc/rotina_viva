@@ -44,6 +44,7 @@ from core.database import (
 )
 from core.feature_flags import ROTINA_ENABLE_CREWAI, ROTINA_ENABLE_ML_LAB
 from modules import ai_engine
+from modules import transcribe_service
 from modules import ml_emotion_chat
 from modules.chat_service import (
     _processing_status_rag_line,
@@ -761,7 +762,11 @@ def render_rotina_chat(
                 st.caption("Atualize o Streamlit (≥ 1.40) para gravar por voz.")
 
     pin_chat_footer_row()
-    st.caption(ml_emotion_chat.emotion_command_help_caption())
+    st.caption(
+        ml_emotion_chat.emotion_command_help_caption()
+        + " · "
+        + transcribe_service.transcribe_setup_hint()
+    )
 
     if _voice_blob is not None:
         _raw = _voice_blob.getvalue()
@@ -771,7 +776,7 @@ def render_rotina_chat(
                 _vname = getattr(_voice_blob, "name", None) or "gravacao.wav"
                 with _rotina_voice_spinner_slot.container():
                     with st.spinner("Processando áudio…"):
-                        _vtxt, _ver = ai_engine.transcribe_voice_bytes(_raw, _vname)
+                        _vtxt, _ver = transcribe_service.transcribe_voice_bytes(_raw, _vname)
                 if _vtxt:
                     st.session_state.rotina_voice_preview_bytes = _raw
                     st.session_state.rotina_voice_hash = _vh
