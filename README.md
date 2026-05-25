@@ -113,13 +113,16 @@ OPENAI_BASE_URL=https://openrouter.ai/api/v1
 OPENAI_CHAT_MODEL=meta-llama/llama-3.3-70b-instruct
 OPENAI_EMBED_MODEL=openai/text-embedding-3-small
 
-OPENROUTER_HTTP_REFERER=https://github.com/Leonardolabdc/Rotina-Viva
+# Identificação no OpenRouter — use o SEU fork/repositório, não o do autor do projeto
+OPENROUTER_HTTP_REFERER=https://github.com/SEU_USUARIO/Rotina-Viva
 OPENROUTER_APP_TITLE=Rotina Viva
 
 # Transcrição de voz (dentro do Docker Compose)
 OPENAI_TRANSCRIBE_BASE_URL=http://whisper:9000/v1
 OPENAI_TRANSCRIBE_MODEL=whisper-1
 ```
+
+> **OpenRouter:** `OPENROUTER_HTTP_REFERER` deve apontar para o GitHub de quem está a correr o projeto (fork ou clone). O OpenRouter usa esse campo para estatísticas de uso — não precisa ser o repositório original. `OPENROUTER_APP_TITLE` é o nome exibido no painel (pode manter `Rotina Viva`).
 
 Para login de demonstração, copie o ficheiro de utilizadores:
 
