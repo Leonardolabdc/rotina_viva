@@ -207,99 +207,77 @@ Para entregar o trabalho com URL pública **e agentes CrewAI**, siga [docs/DEPLO
 
 ## Arquitetura e Fluxo de Dados
 
-### Diagrama de arquitetura
+### Visão geral do sistema
+
+Fluxo principal da esquerda para a direita — sem cruzamentos entre camadas.
+
+```mermaid
+flowchart LR
+    U["Utilizadores<br/>Gestão · Educador · Família"]
+    UI["Interface<br/>Streamlit :8501"]
+    APP["Aplicação<br/>Auth · Chat · RAG · ML"]
+    DATA[("Dados locais<br/>DuckDB · ChromaDB")]
+    EXT["OpenRouter<br/>LLM + embeddings"]
+
+    U --> UI --> APP --> DATA
+    APP --> EXT
+```
+
+| Perfil | Acesso |
+|--------|--------|
+| **Gestão** | CRUD completo nos dados de rotina |
+| **Educador** | Registro (texto/voz) + chat |
+| **Família** | Consulta restrita + RAG em documentos |
+
+### Infraestrutura (Docker)
 
 ```mermaid
 flowchart TB
-    subgraph usuarios["Utilizadores (RBAC)"]
-        G["Gestão<br/>CRUD completo"]
-        E["Educador<br/>registro + chat"]
-        F["Família<br/>consulta + RAG"]
+    subgraph compose["Docker Compose"]
+        RV["rotina-viva<br/>app Streamlit"]
+        WH["rotina-whisper<br/>transcrição PT"]
     end
 
-    subgraph cliente["Cliente"]
-        NAV["Navegador<br/>localhost:8501"]
-    end
-
-    subgraph docker["Docker Compose"]
-        APP["rotina-viva<br/>Streamlit · porta 8501"]
-        WH["rotina-whisper<br/>faster-whisper PT · porta 9000"]
-    end
-
-    subgraph app["Camadas da aplicação (src/)"]
-        UI["ui/<br/>components · styles"]
-        CORE["core/<br/>auth · database · security"]
-        MOD["modules/<br/>chat · ai_engine · RAG · CrewAI · ML"]
-    end
-
-    subgraph dados["Persistência (data/)"]
-        DUCK["DuckDB<br/>CSVs de rotina"]
-        CHROMA["ChromaDB<br/>vector_db/"]
-        DOCS["PDFs + JSON<br/>regimento · usuários"]
-    end
-
-    subgraph apis["Serviços externos"]
-        OR["OpenRouter<br/>chat + embeddings"]
-        LF["Langfuse<br/>observabilidade (opcional)"]
-    end
-
-    G & E & F --> NAV
-    NAV --> APP
-    APP --> UI
-    UI --> CORE
-    UI --> MOD
-    CORE --> MOD
-    MOD --> DUCK
-    MOD --> CHROMA
-    MOD --> DOCS
-    CORE --> DOCS
-    E -->|"áudio (voz)"| MOD
-    MOD -->|"transcrição"| WH
-    MOD --> OR
-    MOD -.-> LF
-    CHROMA --> DOCS
+    RV --> WH
 ```
 
-| Camada | Responsabilidade |
-|--------|------------------|
-| **Interface** | `app.py` orquestra login e telas por perfil (`gestao`, `educador`, `familia`). |
-| **Core** | Autenticação (`auth_manager`), SQL validado e DuckDB (`database`), guardrails e PII (`security`). |
-| **Módulos** | Chat com plano SQL/RAG (`chat_service`, `ai_engine`), índice vetorial (`rag_index`), multi-agente (`rotina_crew`), emoções ML local (`ml_emotion_chat`), voz (`transcribe_service`). |
-| **Dados** | Rotina estruturada em CSV via DuckDB; documentos da escola em PDF indexados no ChromaDB. |
-| **Infra** | Dois contentores: app Streamlit e API Whisper compatível com OpenAI. |
+A app corre em `rotina-viva`; a voz do educador passa pelo Whisper antes do chat processar o texto.
 
-### Fluxo de uma mensagem no chat
+### Camadas do código (`src/`)
 
 ```mermaid
-sequenceDiagram
-    actor U as Utilizador
-    participant UI as Streamlit UI
-    participant SEC as Segurança
-    participant PL as Plano SQL/RAG/ML
-    participant DB as DuckDB
-    participant RAG as ChromaDB
-    participant LLM as OpenRouter
-    participant CR as CrewAI (opcional)
+flowchart TB
+    A["app.py — entrada e roteamento por perfil"]
+    B["ui/ — telas Streamlit"]
+    C["core/ — auth · DuckDB · segurança"]
+    D["modules/ — IA · RAG · CrewAI · ML · voz"]
+    E[("data/ — CSVs · PDFs · vector_db")]
 
-    U->>UI: texto ou voz
-    opt voz
-        UI->>UI: Whisper (Docker)
-    end
-    UI->>SEC: validação + anonimização PII
-    SEC->>PL: intenção e âmbito (RBAC)
-    PL->>DB: SELECT / mutações (educador/gestão)
-    PL->>RAG: busca semântica (PDFs)
-    alt CrewAI ativo
-        PL->>CR: contexto agregado
-        CR->>LLM: especialistas + redação
-    else Chat direto
-        PL->>LLM: prompt com grounding
-    end
-    LLM-->>UI: resposta em PT-BR
-    UI-->>U: markdown + gráficos (Altair)
+    A --> B --> C --> D --> E
 ```
 
-### Fluxo macro (visão geral)
+| Pasta | Papel |
+|-------|-------|
+| `ui/` | Componentes visuais por perfil |
+| `core/` | Login RBAC, SQL validado, guardrails e PII |
+| `modules/` | Motor de chat, índice vetorial, agentes e emoções ML |
+
+### Fluxo do chat
+
+```mermaid
+flowchart LR
+    IN["1. Entrada<br/>texto ou voz"]
+    SEC["2. Segurança<br/>RBAC + PII"]
+    CTX["3. Contexto<br/>DuckDB + ChromaDB"]
+    AI["4. Resposta<br/>OpenRouter / CrewAI"]
+    OUT["5. Saída<br/>markdown · gráficos"]
+
+    IN --> SEC --> CTX --> AI --> OUT
+```
+
+Com **CrewAI** ativo, o passo 4 delega a especialistas (dados, documentos, emoções) antes da redação final. Detalhes: [docs/CREWAI_FLUXO_AGENTES.md](docs/CREWAI_FLUXO_AGENTES.md).
+
+### Diagrama ilustrativo
 
 ![Fluxo Macro do Rotina Viva](assets/rotina_viva_fluxo_macro.png)
 
