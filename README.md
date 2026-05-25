@@ -278,7 +278,31 @@ flowchart LR
     IN --> SEC --> CTX --> AI --> OUT
 ```
 
-Com **CrewAI** ativo, o passo 4 delega a especialistas (dados, documentos, emoções) antes da redação final. Detalhes: [docs/CREWAI_FLUXO_AGENTES.md](docs/CREWAI_FLUXO_AGENTES.md).
+### Fluxo dos agentes (CrewAI)
+
+Quando o passo 4 usa CrewAI, a resposta passa por receção, especialistas em paralelo e redação final.
+
+```mermaid
+flowchart TB
+    PLAN["Plano<br/>dados · emoções · documentos"]
+    REC["Receção"]
+    subgraph ESP["Especialistas em paralelo"]
+        D["Dados"]
+        M["Emoções"]
+        R["Documentos"]
+    end
+    RED["Redação final"]
+
+    PLAN --> REC
+    REC --> D
+    REC --> M
+    REC --> R
+    D --> RED
+    M --> RED
+    R --> RED
+```
+
+Os ramos **Dados**, **Emoções** e **Documentos** só entram se o plano os incluir na mensagem.
 
 ### Diagrama ilustrativo
 
