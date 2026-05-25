@@ -190,15 +190,21 @@ Para entregar o trabalho com URL pública **e agentes CrewAI**, siga [docs/DEPLO
 
 ---
 
-* **Linguagem:** Python 3.12
-* **Interface:** Streamlit
-* **Orquestração de IA:** OpenRouter (CrewAI / LiteLLM)
-* **Banco de Dados Vetorial:** ChromaDB (busca semântica e embeddings em PDFs)
-* **Banco de Dados Relacional:** DuckDB (análise de dados de rotina)
-* **Infraestrutura:** Docker & Docker Compose
-* **Versionamento:** Git & GitHub
+## Stack tecnológica
 
-### Modelos de IA em uso
+Tecnologias e serviços usados neste projeto (versões e detalhes no repositório):
+
+| Camada | Tecnologia |
+|--------|------------|
+| **Linguagem** | Python 3.12 |
+| **Interface** | Streamlit |
+| **Orquestração de IA** | OpenRouter (CrewAI / LiteLLM) |
+| **Banco vetorial** | ChromaDB (busca semântica e embeddings em PDFs) |
+| **Banco relacional** | DuckDB (análise de dados de rotina) |
+| **Infraestrutura** | Docker & Docker Compose |
+| **Versionamento** | Git & GitHub |
+
+### Modelos de IA (stack)
 
 | Função | Modelo |
 |--------|--------|
