@@ -207,6 +207,100 @@ Para entregar o trabalho com URL pública **e agentes CrewAI**, siga [docs/DEPLO
 
 ## Arquitetura e Fluxo de Dados
 
+### Diagrama de arquitetura
+
+```mermaid
+flowchart TB
+    subgraph usuarios["Utilizadores (RBAC)"]
+        G["Gestão<br/>CRUD completo"]
+        E["Educador<br/>registro + chat"]
+        F["Família<br/>consulta + RAG"]
+    end
+
+    subgraph cliente["Cliente"]
+        NAV["Navegador<br/>localhost:8501"]
+    end
+
+    subgraph docker["Docker Compose"]
+        APP["rotina-viva<br/>Streamlit · porta 8501"]
+        WH["rotina-whisper<br/>faster-whisper PT · porta 9000"]
+    end
+
+    subgraph app["Camadas da aplicação (src/)"]
+        UI["ui/<br/>components · styles"]
+        CORE["core/<br/>auth · database · security"]
+        MOD["modules/<br/>chat · ai_engine · RAG · CrewAI · ML"]
+    end
+
+    subgraph dados["Persistência (data/)"]
+        DUCK["DuckDB<br/>CSVs de rotina"]
+        CHROMA["ChromaDB<br/>vector_db/"]
+        DOCS["PDFs + JSON<br/>regimento · usuários"]
+    end
+
+    subgraph apis["Serviços externos"]
+        OR["OpenRouter<br/>chat + embeddings"]
+        LF["Langfuse<br/>observabilidade (opcional)"]
+    end
+
+    G & E & F --> NAV
+    NAV --> APP
+    APP --> UI
+    UI --> CORE
+    UI --> MOD
+    CORE --> MOD
+    MOD --> DUCK
+    MOD --> CHROMA
+    MOD --> DOCS
+    CORE --> DOCS
+    E -->|"áudio (voz)"| MOD
+    MOD -->|"transcrição"| WH
+    MOD --> OR
+    MOD -.-> LF
+    CHROMA --> DOCS
+```
+
+| Camada | Responsabilidade |
+|--------|------------------|
+| **Interface** | `app.py` orquestra login e telas por perfil (`gestao`, `educador`, `familia`). |
+| **Core** | Autenticação (`auth_manager`), SQL validado e DuckDB (`database`), guardrails e PII (`security`). |
+| **Módulos** | Chat com plano SQL/RAG (`chat_service`, `ai_engine`), índice vetorial (`rag_index`), multi-agente (`rotina_crew`), emoções ML local (`ml_emotion_chat`), voz (`transcribe_service`). |
+| **Dados** | Rotina estruturada em CSV via DuckDB; documentos da escola em PDF indexados no ChromaDB. |
+| **Infra** | Dois contentores: app Streamlit e API Whisper compatível com OpenAI. |
+
+### Fluxo de uma mensagem no chat
+
+```mermaid
+sequenceDiagram
+    actor U as Utilizador
+    participant UI as Streamlit UI
+    participant SEC as Segurança
+    participant PL as Plano SQL/RAG/ML
+    participant DB as DuckDB
+    participant RAG as ChromaDB
+    participant LLM as OpenRouter
+    participant CR as CrewAI (opcional)
+
+    U->>UI: texto ou voz
+    opt voz
+        UI->>UI: Whisper (Docker)
+    end
+    UI->>SEC: validação + anonimização PII
+    SEC->>PL: intenção e âmbito (RBAC)
+    PL->>DB: SELECT / mutações (educador/gestão)
+    PL->>RAG: busca semântica (PDFs)
+    alt CrewAI ativo
+        PL->>CR: contexto agregado
+        CR->>LLM: especialistas + redação
+    else Chat direto
+        PL->>LLM: prompt com grounding
+    end
+    LLM-->>UI: resposta em PT-BR
+    UI-->>U: markdown + gráficos (Altair)
+```
+
+### Fluxo macro (visão geral)
+
 ![Fluxo Macro do Rotina Viva](assets/rotina_viva_fluxo_macro.png)
 
 **Destaque Técnico:**
