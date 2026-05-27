@@ -625,7 +625,7 @@ def run_inference(user_input: str, *, predictive_ml: bool = False) -> str:
 
 
 def _golden_path() -> Path:
-    return Path(__file__).resolve().parent / "fixtures" / "golden_dataset.json"
+    return _PROJECT_ROOT / "data" / "golden_dataset.json"
 
 
 def _load_golden() -> list[dict[str, Any]]:

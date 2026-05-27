@@ -343,10 +343,9 @@ Rotina-Viva/
 │   ├── modules/           # IA, RAG, CrewAI, ML emoções
 │   └── ui/                # Interface Streamlit
 │
-├── tests/                 # Testes automatizados
-│   └── fixtures/          # golden_dataset.json
+├── tests/                 # Testes automatizados (DeepEval, unitários)
 │
-├── data/                  # CSVs, PDFs, persistência
+├── data/                  # CSVs, PDFs, golden_dataset.json, persistência
 ├── docs/                  # Documentação extra
 ├── assets/                # Demo e diagramas
 ├── scripts/               # Utilitários (testes Docker)
