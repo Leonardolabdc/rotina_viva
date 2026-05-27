@@ -273,11 +273,19 @@ def render_login() -> None:
                 st.image(str(_logo_path), use_container_width=True)
             else:
                 st.title("Rotina Viva")
-            with st.form("rotina_login_form"):
-                username = st.text_input("Usuário")
-                password = st.text_input("Senha", type="password")
-                submitted = st.form_submit_button("Entrar", use_container_width=True)
-            if submitted:
+            # Sem st.form: evita flash "Missing Submit Button" no carregamento (bug Streamlit #14247).
+            username = st.text_input("Usuário", key="rotina_login_user_field")
+            password = st.text_input(
+                "Senha",
+                type="password",
+                key="rotina_login_pass_field",
+            )
+            if st.button(
+                "Entrar",
+                type="primary",
+                use_container_width=True,
+                key="rotina_login_submit_btn",
+            ):
                 key = (username or "").strip()
                 rec = login_user(key, password)
                 if rec is not None:
