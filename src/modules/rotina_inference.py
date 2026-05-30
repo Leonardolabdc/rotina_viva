@@ -91,7 +91,12 @@ def run_rotina_chat_inference(
 
     from core.guardrails import run_input_guardrails
 
-    _guard = run_input_guardrails(um)
+    _recent = [
+        str(m.get("content") or "")
+        for m in (history or [])
+        if m.get("role") == "user" and (m.get("content") or "").strip()
+    ]
+    _guard = run_input_guardrails(um, recent_user_messages=_recent)
     if not _guard.allowed:
         return _guard.user_message or "Mensagem bloqueada por política de segurança."
 

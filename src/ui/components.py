@@ -851,9 +851,15 @@ def render_rotina_chat(
                 return
 
             _allowed_in, _block_reason = (True, None)
+            _recent_user_texts = [
+                str(m.get("content") or "")
+                for m in history_for_model
+                if m.get("role") == "user" and (m.get("content") or "").strip()
+            ]
             _in_verdict = run_input_guardrails(
                 user_text,
                 role=str(st.session_state.get("rotina_role") or ""),
+                recent_user_messages=_recent_user_texts,
             )
             if not _in_verdict.allowed:
                 _allowed_in, _block_reason = False, _in_verdict.user_message
