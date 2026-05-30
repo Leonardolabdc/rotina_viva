@@ -57,6 +57,14 @@ def _env_truthy(name: str, default: bool = False) -> bool:
     return v in ("1", "true", "yes", "on")
 
 
+def _finalize_assistant_reply(text: str, duck_block: str = "") -> str:
+    """Aplica pipeline de saída (guardrails + PII)."""
+    from core.guardrails import run_output_guardrails
+
+    safe, _ = run_output_guardrails(text or "", duck_block=duck_block or "")
+    return safe
+
+
 def run_rotina_chat_inference(
     user_text: str,
     *,
@@ -80,6 +88,12 @@ def run_rotina_chat_inference(
     um = (user_text or "").strip()
     if not um:
         return ""
+
+    from core.guardrails import run_input_guardrails
+
+    _guard = run_input_guardrails(um)
+    if not _guard.allowed:
+        return _guard.user_message or "Mensagem bloqueada por política de segurança."
 
     history_for_model = history or []
     mode_ds = (data_source_mode or os.getenv("ROTINA_EVAL_DATA_SOURCE_MODE") or "auto").strip()
@@ -339,16 +353,19 @@ def run_rotina_chat_inference(
                 data_dir=DATA_DIR,
                 collection=collection,
             )
-            return (_cr_out.final_markdown or "").strip()
+            return _finalize_assistant_reply((_cr_out.final_markdown or "").strip(), duck_block)
         except Exception:
             pass
 
-    return "".join(
-        ai_engine.processar_resposta_chat_stream(
-            um,
-            duck_block,
-            rag_block,
-            history_for_model,
-            extra_system=_extra_chat or None,
-        )
-    ).strip()
+    return _finalize_assistant_reply(
+        "".join(
+            ai_engine.processar_resposta_chat_stream(
+                um,
+                duck_block,
+                rag_block,
+                history_for_model,
+                extra_system=_extra_chat or None,
+            )
+        ).strip(),
+        duck_block,
+    )

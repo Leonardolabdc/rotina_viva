@@ -43,5 +43,9 @@ def render_security_sidebar_panel() -> None:
                 )
 
         st.caption(
+            "Guardrails: scanners de entrada (injection, jailbreak, toxicidade, tópicos proibidos) "
+            "e de saída (PII, conteúdo clínico/jurídico). Desligar: `ROTINA_GUARDRAILS_ENABLED=false`."
+        )
+        st.caption(
             "Backups: `data/.rotina_csv_backups/` · Log: `data/.rotina_audit/mutations.jsonl`"
         )

@@ -156,52 +156,18 @@ def trim_history_for_chat(
     return out
 
 
-# --- jailbreak / abuse (entrada) ---
-
-_JAILBREAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "ignore_instructions",
-        re.compile(
-            r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions",
-            re.I,
-        ),
-    ),
-    (
-        "reveal_system",
-        re.compile(
-            r"(show|reveal|print|dump)\s+(the\s+)?(system\s+)?prompt",
-            re.I,
-        ),
-    ),
-    (
-        "role_system",
-        re.compile(r"you\s+are\s+now\s+(in\s+)?(developer|admin|root)\s+mode", re.I),
-    ),
-    (
-        "sql_delete_force",
-        re.compile(
-            r"(execute|run)\s+.*\bdelete\s+from\b",
-            re.I,
-        ),
-    ),
-)
+# --- jailbreak / abuse (entrada) — ver pipeline completo em core/guardrails.py ---
 
 
 def scan_user_message(text: str) -> tuple[bool, str | None]:
     """
     Retorna (permitido, motivo).
-    Bloqueio leve — não substitui RBAC no servidor.
+    Delega ao pipeline de guardrails (injection, jailbreak, toxicidade, tópicos proibidos).
     """
-    t = (text or "").strip()
-    if not t:
-        return True, None
-    for code, pat in _JAILBREAK_PATTERNS:
-        if pat.search(t):
-            return False, (
-                f"Padrão bloqueado ({code}). Reformule a pergunta sem pedir para ignorar "
-                "regras do sistema ou executar SQL diretamente."
-            )
-    return True, None
+    from core.guardrails import run_input_guardrails
+
+    v = run_input_guardrails(text)
+    return v.allowed, v.user_message
 
 
 def is_delete_mutation_sql(sql: str) -> bool:

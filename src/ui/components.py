@@ -80,22 +80,23 @@ from modules.services import (
     sleep_meal_report_summary_md,
     sleep_reference_table_df,
 )
+from core.guardrails import (
+    mask_pii_for_domain,
+    run_input_guardrails,
+    run_output_guardrails,
+)
 from core.security import (
-    append_hallucination_notice_if_needed,
     check_llm_message_quota,
-    mask_pii_in_duck_block,
     mutation_requires_extra_confirmation,
     record_llm_message,
-    redact_sensitive_output,
-    scan_user_message,
 )
 
 ROTINA_MUTATION_CONFIRM_KEY = "rotina_mutation_confirmed_sql"
 
 
 def _finalize_assistant_text(text: str, duck_block: str) -> str:
-    t = redact_sensitive_output(text or "")
-    return append_hallucination_notice_if_needed(t, duck_block or "")
+    safe, _verdict = run_output_guardrails(text or "", duck_block=duck_block or "")
+    return safe
 
 
 def _render_safe_md(text: str) -> None:
@@ -849,7 +850,13 @@ def render_rotina_chat(
                 render_rag_sidebar_body(rag_sidebar_body)
                 return
 
-            _allowed_in, _block_reason = scan_user_message(user_text)
+            _allowed_in, _block_reason = (True, None)
+            _in_verdict = run_input_guardrails(
+                user_text,
+                role=str(st.session_state.get("rotina_role") or ""),
+            )
+            if not _in_verdict.allowed:
+                _allowed_in, _block_reason = False, _in_verdict.user_message
             if not _allowed_in:
                 with st.chat_message("assistant"):
                     st.warning(_block_reason or "Mensagem bloqueada por política de segurança.")
@@ -1270,7 +1277,7 @@ def render_rotina_chat(
                     render_rag_sidebar_body(rag_sidebar_body)
                     return
 
-                _duck_for_llm = mask_pii_in_duck_block(duck_block)
+                _duck_for_llm = mask_pii_for_domain(duck_block)
                 _use_crew = (
                     ROTINA_ENABLE_CREWAI
                     and bool(st.session_state.get("rotina_crewai_mode"))

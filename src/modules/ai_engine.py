@@ -944,9 +944,10 @@ def _openai_chat_stream_http_chunks(
 
 
 def _prepare_blocks_for_llm(duck_block: str, rag_block: str) -> tuple[str, str]:
-    from core.security import mask_pii_in_duck_block, wrap_untrusted_data_block
+    from core.guardrails import mask_pii_for_domain
+    from core.security import wrap_untrusted_data_block
 
-    duck = mask_pii_in_duck_block(duck_block or "")
+    duck = mask_pii_for_domain(duck_block or "")
     rag = (rag_block or "").strip()
     return (
         wrap_untrusted_data_block("dados_tabulares", duck),
