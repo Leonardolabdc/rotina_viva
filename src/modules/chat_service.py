@@ -291,6 +291,8 @@ def augment_cadastro_question_with_history(
     ut = (user_text or "").strip()
     if not ut:
         return ut
+    if _extract_student_name_for_infer_sql(ut):
+        return ut
     low = ut.lower()
     if re.search(r"(?is)\baluno\s+\S+\s+\S+", ut):
         return ut
@@ -421,19 +423,34 @@ def _parse_diary_date_filter_sql(um: str) -> str | None:
 
 
 def _extract_student_name_for_infer_sql(um: str) -> str | None:
-    """Nome do aluno a partir da pergunta (incl. bloco «…» do augment)."""
+    """Nome do aluno a partir da pergunta (prioriza a 1.ª linha, antes de blocos de contexto)."""
+    raw = (um or "").strip()
+    if not raw:
+        return None
+    primary = raw.split("\n\n[Contexto")[0].strip()
+    for fragment in (primary, raw):
+        name = _extract_student_name_from_fragment(fragment)
+        if name:
+            return name
+    return None
+
+
+def _extract_student_name_from_fragment(fragment: str) -> str | None:
+    text = (fragment or "").strip()
+    if not text:
+        return None
     for pat in (
         r'["""]([^"""]{3,50})["""]',
         r"[“”]([^“”]{3,50})[“”]",
         r"\bmeu\s+filho\s+['\"]?([A-Za-zÀ-ÿ][^\n'\"?!]{2,45})",
         r"\bminha\s+filha\s+['\"]?([A-Za-zÀ-ÿ][^\n'\"?!]{2,45})",
     ):
-        mq = re.search(pat, um, re.IGNORECASE)
+        mq = re.search(pat, text, re.IGNORECASE)
         if mq:
             cand = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(mq.group(1).strip()))
             if len(cand) >= 4:
                 return cand
-    m_ctx = re.search(r"«([^»]{3,80})»", um)
+    m_ctx = re.search(r"«([^»]{3,80})»", text)
     if m_ctx:
         raw = m_ctx.group(1).strip()
         if re.match(r"(?i)^id_aluno\s*=", raw):
@@ -444,14 +461,14 @@ def _extract_student_name_for_infer_sql(um: str) -> str | None:
     name: str | None = None
     ma = re.search(
         r"(?is)\b(?:aluno|aluna)\s+(.+?)(?:\?|$|\n)",
-        um,
+        text,
     )
     if ma:
         name = _trim_aluno_name_tokens(_strip_dates_from_student_name_fragment(ma.group(1)))
     if not name:
         parts_caps = re.findall(
             r"\b([A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][a-záéíóúâêôãõç]+)+)\b",
-            um,
+            text,
         )
         block = {
             "Qual Turma",
@@ -472,6 +489,40 @@ def _extract_student_name_for_infer_sql(um: str) -> str | None:
     if len(name) < 4:
         return None
     return name
+
+
+def student_names_match(asked: str, registered: str) -> bool:
+    """True se o nome pedido parece referir-se ao aluno registado (perfil Família)."""
+    a = _trim_aluno_name_tokens((asked or "").strip()).casefold()
+    b = _trim_aluno_name_tokens((registered or "").strip()).casefold()
+    if not a or not b:
+        return True
+    if a == b or a in b or b in a:
+        return True
+    at = {t for t in a.split() if len(t) >= 3}
+    bt = {t for t in b.split() if len(t) >= 3}
+    return bool(at & bt)
+
+
+def familia_student_query_blocked_message(
+    user_text: str,
+    parent_scope: tuple[int, str],
+) -> str | None:
+    """
+    Perfil Família: bloqueia consulta explícita sobre outra criança (RBAC).
+    Devolve mensagem para o utilizador ou None se permitido.
+    """
+    asked = _extract_student_name_for_infer_sql(user_text)
+    if not asked:
+        return None
+    _, child_name = parent_scope
+    if student_names_match(asked, child_name):
+        return None
+    child = (child_name or "o seu filho/a filha").strip()
+    return (
+        f"Como responsável, só pode consultar dados de **{child}**. "
+        f"A pergunta menciona **{asked.strip()}**, que não corresponde ao aluno vinculado à sua conta."
+    )
 
 
 def infer_structured_select_sql(user_message: str) -> str | None:

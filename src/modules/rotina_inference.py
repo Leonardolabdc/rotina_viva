@@ -34,6 +34,7 @@ from modules.chat_service import (
     _user_requests_student_delete,
     apply_infer_sql_to_plan,
     apply_parent_sql_scope,
+    familia_student_query_blocked_message,
     apply_user_data_source_mode,
     augment_cadastro_question_with_history,
     augment_question_for_parent_rag,
@@ -135,6 +136,10 @@ def run_rotina_chat_inference(
     planning_user_text = augment_cadastro_question_with_history(
         um, history_for_model, parent_scope=parent_scope
     )
+    if parent_scope is not None:
+        _fam_block = familia_student_query_blocked_message(um, parent_scope)
+        if _fam_block:
+            return _finalize_assistant_reply(_fam_block, "")
     plan = normalize_plan(
         ai_engine.llm_plan_sources(
             planning_user_text,
@@ -146,7 +151,7 @@ def run_rotina_chat_inference(
     )
     plan = apply_user_data_source_mode(plan, mode_ds)
     plan = promote_plan_sql_mutation_field(plan)
-    plan = apply_infer_sql_to_plan(plan, planning_user_text)
+    plan = apply_infer_sql_to_plan(plan, um)
 
     # Perguntas de cardápio/refeições devem privilegiar o PDF nutricional no RAG.
     # Se deixarmos SQL aqui, a Crew tende a responder "comeu bem/pouco/recusou" (diário),

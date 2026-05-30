@@ -55,6 +55,7 @@ from modules.chat_service import (
     try_gestao_delete_by_name_intent,
     apply_infer_sql_to_plan,
     apply_parent_sql_scope,
+    familia_student_query_blocked_message,
     apply_user_data_source_mode,
     augment_cadastro_question_with_history,
     augment_question_for_parent_rag,
@@ -878,6 +879,20 @@ def render_rotina_chat(
 
             record_llm_message(_login_user, DATA_DIR)
 
+            if parent_scope is not None:
+                _fam_block = familia_student_query_blocked_message(
+                    user_text, parent_scope
+                )
+                if _fam_block:
+                    with st.chat_message("assistant"):
+                        st.warning(_fam_block)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": _fam_block}
+                    )
+                    persist_rotina_chat_to_disk(chat_id)
+                    render_rag_sidebar_body(rag_sidebar_body)
+                    return
+
             with st.chat_message("assistant"):
                 _handled_name, _ok_name, _msg_name = try_gestao_delete_by_name_intent(
                     user_text,
@@ -963,7 +978,7 @@ def render_rotina_chat(
                         )
                         plan = apply_user_data_source_mode(plan, mode_ds)
                         plan = promote_plan_sql_mutation_field(plan)
-                        plan = apply_infer_sql_to_plan(plan, planning_user_text)
+                        plan = apply_infer_sql_to_plan(plan, user_text)
                         if is_rag_nutrition_meals_scope_question(user_text):
                             # Cardápio/refeições: priorizar PDF nutricional e evitar SQL do diário
                             # (que só tem "comeu bem/pouco/recusou" e não o menu por dia).

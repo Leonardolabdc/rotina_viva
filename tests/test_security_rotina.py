@@ -128,6 +128,23 @@ def test_guardrails_obfuscation_and_roleplay() -> None:
         recent_user_messages=attacks_in_history,
     )
     assert v4.allowed, v4.user_message
+    from modules.chat_service import (
+        augment_cadastro_question_with_history,
+        familia_student_query_blocked_message,
+        infer_structured_select_sql,
+    )
+
+    aug = augment_cadastro_question_with_history(
+        "Qual a turma da Ana Almeida?",
+        attacks_in_history,
+        parent_scope=(1, "Rafael Souza"),
+    )
+    assert aug == "Qual a turma da Ana Almeida?"
+    assert familia_student_query_blocked_message(
+        "Qual a turma da Ana Almeida?", (1, "Rafael Souza")
+    )
+    sql = infer_structured_select_sql(aug)
+    assert sql and "Ana" in sql and "Almeida" in sql
     print("OK test_guardrails_obfuscation_and_roleplay")
 
 
