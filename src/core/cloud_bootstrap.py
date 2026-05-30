@@ -126,6 +126,8 @@ def apply_cloud_runtime_defaults() -> None:
     # FLAML/torch estoura RAM no tier free; agentes CrewAI são o foco do deploy.
     os.environ.setdefault("ROTINA_ENABLE_ML_LAB", "false")
     os.environ.setdefault("ROTINA_LANGFUSE_ENABLED", "false")
+    # F5 no Community Cloud: token de login na URL + ficheiro do chat (ver auth_manager).
+    os.environ.setdefault("ROTINA_SESSION_IN_URL", "true")
 
     apply_transcribe_env()
 

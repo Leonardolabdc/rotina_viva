@@ -40,6 +40,7 @@ except Exception as e:
 
 from core.auth_manager import (
     consume_browser_session_from_url,
+    ensure_rotina_browser_session_in_url,
     render_login,
     try_restore_rotina_browser_session,
 )
@@ -59,6 +60,7 @@ def main() -> None:
     init_session_state()
     consume_browser_session_from_url()
     try_restore_rotina_browser_session()
+    ensure_rotina_browser_session_in_url()
     if not st.session_state.get("rotina_authenticated"):
         render_login()
         return

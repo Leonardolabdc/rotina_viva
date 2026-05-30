@@ -99,6 +99,47 @@ def _delete_browser_session_file(token: str) -> None:
         pass
 
 
+def seed_rotina_chat_session_auth(
+    chat_id: str,
+    username: str,
+    browser_session_token: str,
+) -> None:
+    """Grava dono + token de login no ficheiro do chat (restaura sessão após F5)."""
+    if not _is_safe_chat_session_id(chat_id) or not _is_safe_chat_session_id(
+        browser_session_token
+    ):
+        return
+    path = _chat_session_dir() / f"{chat_id}.json"
+    payload = {
+        "messages": [],
+        "report": None,
+        "owner": str(username or "").strip(),
+        "browser_session_token": str(browser_session_token).strip(),
+    }
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def load_rotina_chat_browser_session_token(chat_id: str) -> str | None:
+    if not _is_safe_chat_session_id(chat_id):
+        return None
+    path = _chat_session_dir() / f"{chat_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    tok = str(data.get("browser_session_token") or "").strip()
+    if tok and _is_safe_chat_session_id(tok):
+        return tok
+    return None
+
+
 def _direct_chat_path() -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     return DATA_DIR / ROTINA_DIRECT_CHAT_FILE
@@ -335,11 +376,16 @@ def persist_rotina_chat_to_disk(chat_id: str) -> None:
     """Grava conversa + relatório em `ROTINA_DATA_DIR/.rotina_chat/<uuid>.json`."""
     msgs: list[dict[str, Any]] = st.session_state.get("messages") or []
     rep = _report_blob_for_disk()
-    payload = {
+    _browser_tok = st.session_state.get("rotina_browser_session_token")
+    payload: dict[str, Any] = {
         "messages": msgs,
         "report": rep,
         "owner": str(st.session_state.get("rotina_login_username") or ""),
     }
+    if isinstance(_browser_tok, str) and _browser_tok.strip() and _is_safe_chat_session_id(
+        _browser_tok.strip()
+    ):
+        payload["browser_session_token"] = _browser_tok.strip()
     serial = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     if st.session_state.get("_rotina_session_serial") == serial:
         return

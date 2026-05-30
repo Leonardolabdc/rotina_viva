@@ -22,6 +22,7 @@ from core.database import (
     load_rotina_users,
     reset_sleep_meal_report_ui_state,
     save_rotina_users,
+    seed_rotina_chat_session_auth,
 )
 from core.security import (
     ROTINA_SESSION_IN_URL,
@@ -140,41 +141,69 @@ def _restore_session_from_token(raw: str) -> bool:
 
 def consume_browser_session_from_url() -> None:
     """
-    Se `?rotina_session=` estiver na URL, restaura login e remove o parâmetro
-    (reduz vazamento do token no histórico/referrer).
+    Se `?rotina_session=` estiver na URL, restaura login.
+    Com `ROTINA_SESSION_IN_URL`, mantém o parâmetro para sobreviver a vários F5.
     """
     if st.session_state.get("rotina_authenticated"):
         return
     raw = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
     if not raw:
         return
-    if _restore_session_from_token(raw):
+    if not _restore_session_from_token(raw):
+        return
+    if not ROTINA_SESSION_IN_URL:
         try:
             del st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM]
         except Exception:
             pass
+
+
+def ensure_rotina_browser_session_in_url() -> None:
+    """Mantém `?rotina_session=` sincronizado enquanto o utilizador estiver logado."""
+    if not ROTINA_SESSION_IN_URL or not st.session_state.get("rotina_authenticated"):
+        return
+    tok = st.session_state.get("rotina_browser_session_token")
+    if not isinstance(tok, str) or not tok.strip():
+        return
+    tok = tok.strip()
+    current = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
+    if current != tok:
+        st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM] = tok
+
+
+def _try_restore_from_chat_session_token() -> bool:
+    """Fallback: `?rotina_chat=` aponta para ficheiro com `browser_session_token`."""
+    from core.database import load_rotina_chat_browser_session_token
+
+    chat_id = _query_param_first(st.query_params.get(ROTINA_CHAT_QUERY_PARAM))
+    if not chat_id:
+        return False
+    tok = load_rotina_chat_browser_session_token(chat_id)
+    if not tok:
+        return False
+    return _restore_session_from_token(tok)
 
 
 def try_restore_rotina_browser_session() -> bool:
     """
-    Restaura login: token em `session_state`, ou ficheiro em disco (URL opcional).
+    Restaura login: token em `session_state`, URL, ou ficheiro do chat (`rotina_chat`).
     """
     if st.session_state.get("rotina_authenticated"):
+        ensure_rotina_browser_session_in_url()
         return True
     tok = st.session_state.get("rotina_browser_session_token")
     if isinstance(tok, str) and tok.strip():
         if _restore_session_from_token(tok.strip()):
+            ensure_rotina_browser_session_in_url()
             return True
     raw = _query_param_first(st.query_params.get(ROTINA_BROWSER_SESSION_QUERY_PARAM))
-    if not raw:
-        return False
-    ok = _restore_session_from_token(raw)
-    if ok and ROTINA_SESSION_IN_URL:
-        try:
-            del st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM]
-        except Exception:
-            pass
-    return ok
+    if raw and _restore_session_from_token(raw):
+        ensure_rotina_browser_session_in_url()
+        return True
+    if _try_restore_from_chat_session_token():
+        ensure_rotina_browser_session_in_url()
+        return True
+    return False
 
 
 def _direct_chat_viewer_side(session_role: str) -> str | None:
@@ -322,9 +351,11 @@ def render_login() -> None:
                     _tok = _issue_browser_session_token()
                     _save_browser_session_token(_tok, key)
                     st.session_state.rotina_browser_session_token = _tok
+                    _chat_id = str(uuid.uuid4())
+                    seed_rotina_chat_session_auth(_chat_id, key, _tok)
                     if ROTINA_SESSION_IN_URL:
                         st.query_params[ROTINA_BROWSER_SESSION_QUERY_PARAM] = _tok
-                    st.query_params[ROTINA_CHAT_QUERY_PARAM] = str(uuid.uuid4())
+                    st.query_params[ROTINA_CHAT_QUERY_PARAM] = _chat_id
                     st.rerun()
                 else:
                     st.error("Usuário ou senha incorretos.")
